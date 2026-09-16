@@ -1,1 +1,22 @@
-{"config":{"step":{"user":{"title":"Z2Z Librus","description":"Podaj bezpośredni login Synergia i hasło.","data":{"username":"Login","password":"Hasło"}}},"error":{"invalid_auth":"Nieprawidłowe dane lub Librus wymaga CAPTCHA/2FA.","cannot_connect":"Nie udało się połączyć z Librusem."}}}
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Z2Z Librus",
+        "description": "Podaj bezpośredni login i hasło do Librus Synergia.",
+        "data": {
+          "username": "Login",
+          "password": "Hasło"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Nieprawidłowy login lub hasło.",
+      "cannot_connect": "Nie można połączyć się z Librus.",
+      "unknown": "Nieoczekiwany błąd."
+    },
+    "abort": {
+      "already_configured": "To konto Librus jest już skonfigurowane."
+    }
+  }
+}

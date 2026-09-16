@@ -14,21 +14,13 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class LibrusCoordinator(DataUpdateCoordinator):
-    def __init__(
-        self,
-        hass: HomeAssistant,
-        entry: ConfigEntry,
-        client: LibrusClient,
-    ) -> None:
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, client: LibrusClient) -> None:
         super().__init__(
             hass,
             logger=_LOGGER,
-            name=DOMAIN,
+            name=f"{DOMAIN}_{entry.entry_id}",
             update_interval=timedelta(
-                minutes=entry.options.get(
-                    CONF_SCAN_INTERVAL,
-                    DEFAULT_SCAN_INTERVAL,
-                )
+                minutes=entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
             ),
         )
         self.entry = entry

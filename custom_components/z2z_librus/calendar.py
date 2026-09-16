@@ -1,32 +1,212 @@
-from datetime import datetime, timedelta
+from __future__ import annotations
+
+from datetime import date, datetime, timedelta
+
 from homeassistant.components.calendar import CalendarEntity, CalendarEvent
+from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+
 from .const import DOMAIN
 
-async def async_setup_entry(hass, entry, async_add_entities):
-    c=hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([AgendaCalendar(c,entry)])
 
-class AgendaCalendar(CoordinatorEntity, CalendarEntity):
-    _attr_name="Librus – terminarz"
-    _attr_has_entity_name=False
-    def __init__(self,c,e): super().__init__(c); self.entry=e; self._attr_unique_id=f"{e.entry_id}_agenda"
+def _me(data):
+    m = data.get("me", {})
+    return m.get("Me", m) if isinstance(m, dict) else {}
+
+
+def _student_name(data):
+    m = _me(data)
+    return m.get("Name") or str(m.get("Login") or "Librus")
+
+
+def _ident(data, fallback):
+    m = _me(data)
+    return str(m.get("AccountId") or m.get("Login") or fallback)
+
+
+def _date_from_text(value):
+    if not value:
+        return None
+    text = str(value).strip()
+    # librus-apix homework usually uses YYYY-MM-DD; tolerate timestamps too.
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
+    except Exception:
+        pass
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d.%m.%Y"):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except Exception:
+            continue
+    return None
+
+
+def _in_range(event_start, start, end):
+    start_date = start.date() if isinstance(start, datetime) else start
+    end_date = end.date() if isinstance(end, datetime) else end
+    e_date = event_start.date() if isinstance(event_start, datetime) else event_start
+    return start_date <= e_date <= end_date
+
+
+async def async_setup_entry(hass, entry, async_add_entities):
+    c = hass.data[DOMAIN][entry.entry_id]
+    async_add_entities(
+        [
+            AgendaCalendar(c, entry),
+            TimetableCalendar(c, entry),
+            HomeworkCalendar(c, entry),
+        ]
+    )
+
+
+class BaseCalendar(CoordinatorEntity, CalendarEntity):
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator, entry, suffix):
+        super().__init__(coordinator)
+        self.entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_{suffix}"
+
+    @property
+    def device_info(self):
+        ident = _ident(self.coordinator.data, self.entry.entry_id)
+        return DeviceInfo(
+            identifiers={(DOMAIN, ident)},
+            name=f"Librus – {_student_name(self.coordinator.data)}",
+            manufacturer="Librus (unofficial)",
+            model="Synergia",
+            configuration_url="https://synergia.librus.pl/",
+        )
+
     @property
     def event(self):
-        now=datetime.now().astimezone(); events=self._events(now,now+timedelta(days=90)); return events[0] if events else None
-    async def async_get_events(self,hass,start_date,end_date): return self._events(start_date,end_date)
-    def _events(self,start,end):
-        # Homework is reliable API data and is exposed as calendar events immediately.
-        d=self.coordinator.data.get("homework_raw",{}); rows=[]
-        if isinstance(d,dict): rows=d.get("HomeWorkAssignments") or d.get("Homework") or []
-        out=[]
-        for x in rows:
-            raw=x.get("Date") or x.get("DueDate") or x.get("Deadline")
-            if not raw: continue
+        now = datetime.now().astimezone()
+        events = self._events(now, now + timedelta(days=90))
+        return events[0] if events else None
+
+    async def async_get_events(self, hass, start_date, end_date):
+        return self._events(start_date, end_date)
+
+
+class AgendaCalendar(BaseCalendar):
+    _attr_name = "Terminarz"
+    _attr_icon = "mdi:calendar-alert"
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry, "agenda")
+
+    def _events(self, start, end):
+        out = []
+        for x in self.coordinator.data.get("schedule", []):
             try:
-                dt=datetime.fromisoformat(str(raw).replace("Z","+00:00"))
-                if dt.tzinfo is None: dt=dt.astimezone()
-            except Exception: continue
-            if start <= dt <= end:
-                out.append(CalendarEvent(summary=x.get("Topic") or x.get("Content") or "Zadanie Librus",start=dt,end=dt+timedelta(minutes=30),description=str(x)))
-        return sorted(out,key=lambda e:e.start)
+                d = datetime.fromisoformat(x["date"]).date()
+            except Exception:
+                continue
+            if not _in_range(d, start, end):
+                continue
+
+            title = x.get("title") or x.get("subject") or "Wydarzenie Librus"
+            subject = x.get("subject")
+            description_parts = []
+            if subject:
+                description_parts.append(f"Przedmiot: {subject}")
+            if x.get("number") not in (None, "", "unknown"):
+                description_parts.append(f"Lekcja: {x.get('number')}")
+            if x.get("hour") not in (None, "", "unknown"):
+                description_parts.append(f"Godzina: {x.get('hour')}")
+            if x.get("data"):
+                description_parts.append(str(x.get("data")))
+
+            # Keep schedule entries as all-day events unless Librus provides a reliable clock time.
+            out.append(
+                CalendarEvent(
+                    summary=title,
+                    start=d,
+                    end=d + timedelta(days=1),
+                    description="\n".join(description_parts),
+                )
+            )
+        return sorted(out, key=lambda e: e.start)
+
+
+class TimetableCalendar(BaseCalendar):
+    _attr_name = "Plan lekcji"
+    _attr_icon = "mdi:calendar-clock"
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry, "timetable")
+
+    def _events(self, start, end):
+        out = []
+        tz = datetime.now().astimezone().tzinfo
+
+        for x in self.coordinator.data.get("timetable", []):
+            try:
+                dt_start = datetime.fromisoformat(
+                    f"{x['date']}T{x['date_from']}"
+                ).replace(tzinfo=tz)
+                dt_end = datetime.fromisoformat(
+                    f"{x['date']}T{x['date_to']}"
+                ).replace(tzinfo=tz)
+            except Exception:
+                continue
+
+            if not _in_range(dt_start, start, end):
+                continue
+
+            desc = []
+            if x.get("teacher_and_classroom"):
+                desc.append(x["teacher_and_classroom"])
+            if x.get("number") is not None:
+                desc.append(f"Lekcja nr {x['number']}")
+            if x.get("info"):
+                desc.append(str(x["info"]))
+
+            out.append(
+                CalendarEvent(
+                    summary=x.get("subject") or "Lekcja",
+                    start=dt_start,
+                    end=dt_end,
+                    description="\n".join(desc),
+                )
+            )
+
+        return sorted(out, key=lambda e: e.start)
+
+
+class HomeworkCalendar(BaseCalendar):
+    _attr_name = "Zadania domowe"
+    _attr_icon = "mdi:book-open-page-variant"
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry, "homework")
+
+    def _events(self, start, end):
+        out = []
+        for x in self.coordinator.data.get("homework", []):
+            d = _date_from_text(x.get("completion_date") or x.get("task_date"))
+            if not d or not _in_range(d, start, end):
+                continue
+
+            summary = x.get("subject") or x.get("lesson") or "Zadanie domowe"
+            if x.get("category"):
+                summary = f"{summary} – {x['category']}"
+
+            description = "\n".join(
+                p for p in [
+                    x.get("lesson"),
+                    f"Nauczyciel: {x.get('teacher')}" if x.get("teacher") else None,
+                    f"Termin: {x.get('completion_date')}" if x.get("completion_date") else None,
+                ] if p
+            )
+
+            out.append(
+                CalendarEvent(
+                    summary=summary,
+                    start=d,
+                    end=d + timedelta(days=1),
+                    description=description,
+                )
+            )
+
+        return sorted(out, key=lambda e: e.start)
