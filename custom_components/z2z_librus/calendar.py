@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import re
 
 from homeassistant.components.calendar import CalendarEntity, CalendarEvent
 from homeassistant.helpers.entity import DeviceInfo
@@ -29,6 +30,28 @@ def _in_range(event_start, start, end):
     end_date = end.date() if isinstance(end, datetime) else end
     e_date = event_start.date() if isinstance(event_start, datetime) else event_start
     return start_date <= e_date <= end_date
+
+
+def _clean_teacher_room(value: str | None) -> str:
+    """Keep only useful teacher/room text and remove repeated whitespace."""
+    if not value:
+        return ""
+    text = re.sub(r"\s+", " ", str(value)).strip()
+    return text
+
+
+def _test_description(details) -> str:
+    """Extract only the scope/description of a test."""
+    if isinstance(details, dict):
+        return str(details.get("Opis") or details.get("opis") or "").strip()
+    if details:
+        text = str(details)
+        # Best-effort extraction from a stringified dict.
+        match = re.search(r"['\"]Opis['\"]\s*:\s*['\"](.+?)['\"](?:,\s*['\"]Data dodania|,\s*['\"]Nauczyciel|}$)", text)
+        if match:
+            return match.group(1).strip()
+        return text.strip()
+    return ""
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -76,7 +99,6 @@ class AgendaCalendar(BaseCalendar):
     _attr_icon = "mdi:clipboard-text-clock"
 
     def __init__(self, coordinator, entry):
-        # Keep the old unique-id so existing calendar entity is reused.
         super().__init__(coordinator, entry, "agenda")
 
     def _events(self, start, end):
@@ -89,20 +111,17 @@ class AgendaCalendar(BaseCalendar):
             if not _in_range(d, start, end):
                 continue
 
-            description_parts = []
-            if x.get("subject"):
-                description_parts.append(f"Przedmiot: {x['subject']}")
-            if x.get("number") not in (None, "", "unknown"):
-                description_parts.append(f"Lekcja: {x['number']}")
-            if x.get("data"):
-                description_parts.append(str(x["data"]))
+            # IMPORTANT: calendar stays minimal.
+            # Title already contains "Kartkówka/Klasówka – przedmiot".
+            # Description contains only the test scope.
+            description = _test_description(x.get("data"))
 
             out.append(
                 CalendarEvent(
                     summary=x.get("title") or x.get("kind") or "Kartkówka / klasówka",
                     start=d,
                     end=d + timedelta(days=1),
-                    description="\n".join(description_parts),
+                    description=description,
                 )
             )
         return sorted(out, key=lambda e: e.start)
@@ -133,20 +152,16 @@ class TimetableCalendar(BaseCalendar):
             if not _in_range(dt_start, start, end):
                 continue
 
-            desc = []
-            if x.get("teacher_and_classroom"):
-                desc.append(x["teacher_and_classroom"])
-            if x.get("number") is not None:
-                desc.append(f"Lekcja nr {x['number']}")
-            if x.get("info"):
-                desc.append(str(x["info"]))
+            # Atomic Calendar already shows subject and hours.
+            # Description: teacher + classroom only.
+            description = _clean_teacher_room(x.get("teacher_and_classroom"))
 
             out.append(
                 CalendarEvent(
                     summary=x.get("subject") or "Lekcja",
                     start=dt_start,
                     end=dt_end,
-                    description="\n".join(desc),
+                    description=description,
                 )
             )
 
@@ -182,12 +197,7 @@ class HomeworkCalendar(BaseCalendar):
                     summary=summary,
                     start=d,
                     end=d + timedelta(days=1),
-                    description="\n".join(
-                        p for p in [
-                            x.get("lesson"),
-                            f"Nauczyciel: {x.get('teacher')}" if x.get("teacher") else None,
-                        ] if p
-                    ),
+                    description=str(x.get("lesson") or "").strip(),
                 )
             )
 
