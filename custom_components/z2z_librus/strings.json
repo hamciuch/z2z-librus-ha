@@ -1,0 +1,1 @@
+{"config":{"step":{"user":{"title":"Z2Z Librus","description":"Podaj bezpośredni login Synergia i hasło.","data":{"username":"Login","password":"Hasło"}}},"error":{"invalid_auth":"Nieprawidłowe dane lub Librus wymaga CAPTCHA/2FA.","cannot_connect":"Nie udało się połączyć z Librusem."}}}
