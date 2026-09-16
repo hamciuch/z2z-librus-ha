@@ -1,97 +1,172 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date
+import asyncio
+from dataclasses import asdict, is_dataclass
+from datetime import date, timedelta
 from typing import Any
-from aiohttp import ClientSession, ClientResponseError
 
-from .const import BASE, API
+from librus_apix.client import new_client
+from librus_apix.exceptions import AuthorizationError, TokenError
 
-class LibrusError(Exception): pass
-class LibrusAuthError(LibrusError): pass
 
-@dataclass
+class LibrusError(Exception):
+    """Base Librus exception."""
+
+
+class LibrusAuthError(LibrusError):
+    """Authentication failed."""
+
+
 class LibrusClient:
-    session: ClientSession
-    username: str
-    password: str
+    """Async wrapper around the synchronous librus-apix client."""
+
+    def __init__(self, username: str, password: str) -> None:
+        self.username = username
+        self.password = password
+        self._client = None
+        self._token = None
+        self._auth_lock = asyncio.Lock()
 
     async def login(self) -> None:
-        # Current Synergia flow (changed in 2026): bootstrap portalRodzina first.
-        async with self.session.get(f"{BASE}/loguj/portalRodzina", allow_redirects=True) as r:
-            await r.text()
-        # The login form ultimately posts login/passwd to Synergia. Keep redirects/cookies.
-        payload = {"login": self.username, "passwd": self.password, "ed_pass_keydown": "", "cz": ""}
-        async with self.session.post(f"{BASE}/loguj", data=payload, allow_redirects=True) as r:
-            await r.text()
-        try:
-            await self.get("Me")
-        except Exception as err:
-            raise LibrusAuthError("Librus login failed or additional captcha/2FA is required") from err
+        """Authenticate using the same flow as librus-apix."""
+        async with self._auth_lock:
+            try:
+                self._client = await asyncio.to_thread(new_client)
+                self._token = await asyncio.to_thread(
+                    self._client.get_token,
+                    self.username,
+                    self.password,
+                )
+            except AuthorizationError as err:
+                self._client = None
+                self._token = None
+                raise LibrusAuthError(str(err)) from err
+            except Exception as err:
+                self._client = None
+                self._token = None
+                raise LibrusAuthError(f"Librus authentication failed: {err}") from err
 
-    async def get(self, path: str, params: dict[str, Any] | None = None) -> Any:
-        url = f"{API}/{path.lstrip('/')}"
-        async with self.session.get(url, params=params, headers={"Accept": "application/json"}) as r:
-            if r.status in (401, 403):
-                raise LibrusAuthError(f"HTTP {r.status}")
-            r.raise_for_status()
-            return await r.json(content_type=None)
+        if not self._token:
+            raise LibrusAuthError("Librus did not return an authentication token")
+
+    async def _ensure_login(self) -> None:
+        if self._client is None or self._token is None:
+            await self.login()
+
+    async def _run(self, func, *args):
+        """Run a librus-apix blocking function in a worker thread, reauth once."""
+        await self._ensure_login()
+
+        for attempt in range(2):
+            try:
+                return await asyncio.to_thread(func, self._client, *args)
+            except TokenError:
+                self._client = None
+                self._token = None
+                if attempt == 0:
+                    await self.login()
+                    continue
+                raise LibrusAuthError("Librus session expired")
+            except AuthorizationError as err:
+                self._client = None
+                self._token = None
+                raise LibrusAuthError(str(err)) from err
+
+    async def get_student(self) -> dict[str, Any]:
+        from librus_apix.student_information import get_student_information
+
+        info = await self._run(get_student_information)
+        return {
+            "FirstName": info.name.split(" ", 1)[0] if info.name else "",
+            "LastName": info.name.split(" ", 1)[1] if info.name and " " in info.name else "",
+            "Name": info.name,
+            "Class": info.class_name,
+            "Number": info.number,
+            "Tutor": info.tutor,
+            "School": info.school,
+            "LuckyNumber": info.lucky_number,
+            "Login": self.username,
+            "AccountId": self.username,
+        }
 
     @staticmethod
-    def resources(obj: Any, *keys: str) -> list[dict[str, Any]]:
-        cur = obj
-        for key in keys:
-            if isinstance(cur, dict) and key in cur:
-                cur = cur[key]
-            else:
-                return []
-        return cur if isinstance(cur, list) else []
+    def _grade_to_dict(grade: Any, grade_type: str) -> dict[str, Any]:
+        return {
+            "subject_name": getattr(grade, "subject", "") or "",
+            "display_value": str(getattr(grade, "grade", "") or ""),
+            "date": str(getattr(grade, "date", "") or ""),
+            "category_name": str(getattr(grade, "category", "") or ""),
+            "teacher": str(getattr(grade, "teacher", "") or ""),
+            "semester": getattr(grade, "semester", None),
+            "type": grade_type,
+        }
+
+    async def get_grades(self) -> list[dict[str, Any]]:
+        from librus_apix.grades import get_grades
+
+        numeric, averages, descriptive = await self._run(get_grades, "all")
+
+        result: list[dict[str, Any]] = []
+
+        for subject_group in numeric or []:
+            for subject, grades in subject_group.items():
+                for grade in grades:
+                    row = self._grade_to_dict(grade, "numeric")
+                    if not row["subject_name"]:
+                        row["subject_name"] = subject
+                    result.append(row)
+
+        # Descriptive grades can also contain normal values such as +, -, 5+, np, bz.
+        for subject_group in descriptive or []:
+            for subject, grades in subject_group.items():
+                for grade in grades:
+                    row = self._grade_to_dict(grade, "descriptive")
+                    if not row["subject_name"]:
+                        row["subject_name"] = subject
+                    result.append(row)
+
+        return result
+
+    async def get_homework(self) -> list[dict[str, Any]]:
+        from librus_apix.homework import get_homework
+
+        today = date.today()
+        rows = await self._run(
+            get_homework,
+            today.strftime("%Y-%m-%d"),
+            (today + timedelta(days=30)).strftime("%Y-%m-%d"),
+        )
+
+        return [
+            {
+                "lesson": x.lesson,
+                "teacher": x.teacher,
+                "subject": x.subject,
+                "category": x.category,
+                "task_date": x.task_date,
+                "completion_date": x.completion_date,
+                "href": x.href,
+            }
+            for x in (rows or [])
+        ]
 
     async def fetch_core(self) -> dict[str, Any]:
-        me = await self.get("Me")
-        grades = await self.get("Grades")
-        out = {"me": me, "grades_raw": grades}
-        # Optional endpoints differ by school/modules. Failure of one must not kill the integration.
-        for name, endpoint in {
-            "attendances_raw": "Attendances",
-            "homework_raw": "HomeWorkAssignments",
-            "notices_raw": "SchoolNotices",
-            "grade_types_raw": "Grades/Types",
-            "grade_comments_raw": "Grades/Comments",
-        }.items():
-            try: out[name] = await self.get(endpoint)
-            except Exception: out[name] = {}
-        return out
+        student = await self.get_student()
+        grades = await self.get_grades()
 
-    async def resolve(self, path: str) -> dict[str, Any]:
         try:
-            data = await self.get(path)
-            if isinstance(data, dict):
-                for key in ("Subject", "Category", "User", "Lesson"):
-                    if isinstance(data.get(key), dict): return data[key]
-                return data
+            homework = await self.get_homework()
         except Exception:
-            pass
-        return {}
+            homework = []
+
+        return {
+            "me": {"Me": student},
+            "grades": grades,
+            "grades_raw": {},
+            "homework_raw": {"HomeWorkAssignments": homework},
+            "attendances_raw": {},
+        }
 
     async def enrich_grades(self, raw: dict[str, Any]) -> list[dict[str, Any]]:
-        grades = self.resources(raw, "Grades") or self.resources(raw, "grades")
-        result=[]; subjects={}; categories={}; users={}
-        for g in grades:
-            x=dict(g)
-            sid=((g.get("Subject") or {}).get("Id") if isinstance(g.get("Subject"),dict) else g.get("Subject"))
-            cid=((g.get("Category") or {}).get("Id") if isinstance(g.get("Category"),dict) else g.get("Category"))
-            uid=((g.get("AddedBy") or {}).get("Id") if isinstance(g.get("AddedBy"),dict) else g.get("AddedBy"))
-            if sid:
-                if sid not in subjects: subjects[sid]=await self.resolve(f"Subjects/{sid}")
-                x["subject_name"]=subjects[sid].get("Name") or subjects[sid].get("name") or str(sid)
-            if cid:
-                if cid not in categories: categories[cid]=await self.resolve(f"Grades/Categories/{cid}")
-                x["category_name"]=categories[cid].get("Name") or categories[cid].get("name") or str(cid)
-            if uid:
-                if uid not in users: users[uid]=await self.resolve(f"Users/{uid}")
-                u=users[uid]; x["teacher"]=" ".join(filter(None,[u.get("FirstName"),u.get("LastName")]))
-            # Preserve Librus value EXACTLY: 5+, 4-, +, -, bz, np etc.
-            x["display_value"] = str(g.get("Grade") or g.get("Value") or g.get("grade") or "")
-            result.append(x)
-        return result
+        # Kept for compatibility with the existing coordinator.
+        return await self.get_grades()

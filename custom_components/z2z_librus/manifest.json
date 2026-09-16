@@ -1,10 +1,12 @@
 {
   "domain": "z2z_librus",
   "name": "Z2Z Librus",
-  "version": "0.1.0",
-  "documentation": "https://github.com/YOUR_GITHUB/z2z-librus-ha",
-  "issue_tracker": "https://github.com/YOUR_GITHUB/z2z-librus-ha/issues",
+  "version": "0.1.1",
+  "documentation": "https://github.com/hamciuch/z2z-librus-ha",
+  "issue_tracker": "https://github.com/hamciuch/z2z-librus-ha/issues",
   "config_flow": true,
   "iot_class": "cloud_polling",
-  "requirements": []
+  "requirements": [
+    "librus-apix>=1.5.1"
+  ]
 }
