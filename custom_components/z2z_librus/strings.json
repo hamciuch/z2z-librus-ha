@@ -18,5 +18,17 @@
     "abort": {
       "already_configured": "To konto Librus jest już skonfigurowane."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Ustawienia planu",
+        "description": "Ustaw godzinę obiadu. Obiad jest dodawany do planu od poniedziałku do piątku i trwa 15 minut.",
+        "data": {
+          "lunch_enabled": "Pokazuj obiad w planie",
+          "lunch_time": "Godzina obiadu"
+        }
+      }
+    }
   }
 }

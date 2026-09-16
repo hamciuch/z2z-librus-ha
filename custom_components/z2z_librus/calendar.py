@@ -1,13 +1,20 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 import re
 
 from homeassistant.components.calendar import CalendarEntity, CalendarEvent
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import (
+    CONF_LUNCH_ENABLED,
+    CONF_LUNCH_TIME,
+    DEFAULT_LUNCH_ENABLED,
+    DEFAULT_LUNCH_TIME,
+    DOMAIN,
+    LUNCH_DURATION_MINUTES,
+)
 
 
 def _me(data):
@@ -56,12 +63,30 @@ def _test_description(details) -> str:
         return str(details.get("Opis") or details.get("opis") or "").strip()
     if details:
         text = str(details)
-        # Best-effort extraction from a stringified dict.
-        match = re.search(r"['\"]Opis['\"]\s*:\s*['\"](.+?)['\"](?:,\s*['\"]Data dodania|,\s*['\"]Nauczyciel|}$)", text)
+        match = re.search(
+            r"['\"]Opis['\"]\s*:\s*['\"](.+?)['\"](?:,\s*['\"]Data dodania|,\s*['\"]Nauczyciel|}$)",
+            text,
+        )
         if match:
             return match.group(1).strip()
         return text.strip()
     return ""
+
+
+def _parse_lunch_time(value) -> time:
+    """Accept HA time-selector values such as 11:45 or 11:45:00."""
+    if isinstance(value, time):
+        return value.replace(second=0, microsecond=0)
+
+    text = str(value or DEFAULT_LUNCH_TIME).strip()
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            parsed = datetime.strptime(text, fmt).time()
+            return parsed.replace(second=0, microsecond=0)
+        except ValueError:
+            pass
+
+    return time(11, 45)
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -121,9 +146,6 @@ class AgendaCalendar(BaseCalendar):
             if not _in_range(d, start, end):
                 continue
 
-            # IMPORTANT: calendar stays minimal.
-            # Title already contains "Kartkówka/Klasówka – przedmiot".
-            # Description contains only the test scope.
             description = _test_description(x.get("data"))
 
             out.append(
@@ -144,6 +166,38 @@ class TimetableCalendar(BaseCalendar):
     def __init__(self, coordinator, entry):
         super().__init__(coordinator, entry, "timetable")
 
+    def _lunch_events(self, start, end, tz):
+        if not self.entry.options.get(CONF_LUNCH_ENABLED, DEFAULT_LUNCH_ENABLED):
+            return []
+
+        lunch_time = _parse_lunch_time(
+            self.entry.options.get(CONF_LUNCH_TIME, DEFAULT_LUNCH_TIME)
+        )
+
+        first_day = start.date() if isinstance(start, datetime) else start
+        last_day = end.date() if isinstance(end, datetime) else end
+
+        out = []
+        day = first_day
+
+        while day <= last_day:
+            # School lunch: Monday-Friday.
+            if day.weekday() < 5:
+                dt_start = datetime.combine(day, lunch_time).replace(tzinfo=tz)
+                dt_end = dt_start + timedelta(minutes=LUNCH_DURATION_MINUTES)
+
+                out.append(
+                    CalendarEvent(
+                        summary="🍽️ Obiad",
+                        start=dt_start,
+                        end=dt_end,
+                    )
+                )
+
+            day += timedelta(days=1)
+
+        return out
+
     def _events(self, start, end):
         out = []
         tz = datetime.now().astimezone().tzinfo
@@ -162,8 +216,6 @@ class TimetableCalendar(BaseCalendar):
             if not _in_range(dt_start, start, end):
                 continue
 
-            # Atomic Calendar already shows subject and hours.
-            # Description: teacher + classroom only.
             description = _clean_teacher_room(x.get("teacher_and_classroom"))
 
             out.append(
@@ -175,6 +227,7 @@ class TimetableCalendar(BaseCalendar):
                 )
             )
 
+        out.extend(self._lunch_events(start, end, tz))
         return sorted(out, key=lambda e: e.start)
 
 
