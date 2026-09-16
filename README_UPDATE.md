@@ -1,13 +1,10 @@
-# Z2Z Librus v0.3.0
+# Z2Z Librus v0.3.3
 
-Zmiany:
-- tylko kartkówki i klasówki w terminarzu (filtrowanie nauczycieli, wakatów, zastępstw itd.),
-- pełna treść 3 najnowszych wiadomości,
-- 3 osobne encje wiadomości — kliknięcie encji pokazuje treść w atrybutach,
-- przedmioty z planu lekcji dostają encje ocen nawet, gdy nie ma jeszcze ocen,
-- lista przedmiotów zbierana z 4 tygodni planu,
-- pomocnicza encja najbliższej kartkówki/klasówki,
-- przykładowy dashboard i automatyzacje.
+Zmiana prezentacji planu lekcji:
+- numer lekcji jest dodawany bezpośrednio do tytułu wydarzenia kalendarza,
+  np. `1. religia`, `2. matematyka`, `4. język angielski`;
+- numer pochodzi z Librusa (`Period.number`), nie z ręcznego mapowania godzin;
+- opis lekcji pozostaje czysty: tylko nauczyciel / sala;
+- kartkówki i klasówki nie są numerowane i zachowują dotychczasowe filtrowanie.
 
-Uwaga: odczyt pełnej treści może sprawić, że Librus oznaczy wiadomość jako przeczytaną.
-Automatyzacja nowej wiadomości korzysta więc z ID wiadomości, nie z flagi unread.
+Po aktualizacji zrestartuj Home Assistant.

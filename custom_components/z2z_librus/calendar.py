@@ -40,6 +40,16 @@ def _clean_teacher_room(value: str | None) -> str:
     return text
 
 
+def _lesson_title(subject, number) -> str:
+    """Return calendar title like '1. religia'."""
+    subject = str(subject or "Lekcja").strip()
+    try:
+        number = int(number)
+        return f"{number}. {subject}"
+    except (TypeError, ValueError):
+        return subject
+
+
 def _test_description(details) -> str:
     """Extract only the scope/description of a test."""
     if isinstance(details, dict):
@@ -158,7 +168,7 @@ class TimetableCalendar(BaseCalendar):
 
             out.append(
                 CalendarEvent(
-                    summary=x.get("subject") or "Lekcja",
+                    summary=_lesson_title(x.get("subject"), x.get("number")),
                     start=dt_start,
                     end=dt_end,
                     description=description,
