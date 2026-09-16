@@ -1,20 +1,13 @@
-# Z2Z Librus v0.2.0
+# Z2Z Librus v0.3.0
 
-## Added
-- grades including descriptive marks such as `+`, `-`, `np`, `bz`
-- one device/config entry per Librus account (multi-student)
-- student info + lucky number
-- attendance records + overall/semester percentage
-- homework sensor and native Home Assistant calendar
-- received message headers + unread count
-- current/next-week timetable + native Home Assistant calendar
-- current/next-month Librus schedule/agenda + native Home Assistant calendar
-- next lesson sensor
-- next agenda event sensor
-- failures of optional Librus modules do not take down the whole integration
+Zmiany:
+- tylko kartkówki i klasówki w terminarzu (filtrowanie nauczycieli, wakatów, zastępstw itd.),
+- pełna treść 3 najnowszych wiadomości,
+- 3 osobne encje wiadomości — kliknięcie encji pokazuje treść w atrybutach,
+- przedmioty z planu lekcji dostają encje ocen nawet, gdy nie ma jeszcze ocen,
+- lista przedmiotów zbierana z 4 tygodni planu,
+- pomocnicza encja najbliższej kartkówki/klasówki,
+- przykładowy dashboard i automatyzacje.
 
-## Install
-Copy `custom_components/z2z_librus` over the existing integration, commit/push,
-then update/redownload from HACS and restart Home Assistant.
-
-If HACS does not see 0.2.0 immediately, use Redownload or remove/re-add the custom repository.
+Uwaga: odczyt pełnej treści może sprawić, że Librus oznaczy wiadomość jako przeczytaną.
+Automatyzacja nowej wiadomości korzysta więc z ID wiadomości, nie z flagi unread.

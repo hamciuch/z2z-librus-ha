@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 
 from homeassistant.components.calendar import CalendarEntity, CalendarEvent
 from homeassistant.helpers.entity import DeviceInfo
@@ -22,23 +22,6 @@ def _student_name(data):
 def _ident(data, fallback):
     m = _me(data)
     return str(m.get("AccountId") or m.get("Login") or fallback)
-
-
-def _date_from_text(value):
-    if not value:
-        return None
-    text = str(value).strip()
-    # librus-apix homework usually uses YYYY-MM-DD; tolerate timestamps too.
-    try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
-    except Exception:
-        pass
-    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d.%m.%Y"):
-        try:
-            return datetime.strptime(text, fmt).date()
-        except Exception:
-            continue
-    return None
 
 
 def _in_range(event_start, start, end):
@@ -81,7 +64,7 @@ class BaseCalendar(CoordinatorEntity, CalendarEntity):
     @property
     def event(self):
         now = datetime.now().astimezone()
-        events = self._events(now, now + timedelta(days=90))
+        events = self._events(now, now + timedelta(days=120))
         return events[0] if events else None
 
     async def async_get_events(self, hass, start_date, end_date):
@@ -89,10 +72,11 @@ class BaseCalendar(CoordinatorEntity, CalendarEntity):
 
 
 class AgendaCalendar(BaseCalendar):
-    _attr_name = "Terminarz"
-    _attr_icon = "mdi:calendar-alert"
+    _attr_name = "Kartkówki i klasówki"
+    _attr_icon = "mdi:clipboard-text-clock"
 
     def __init__(self, coordinator, entry):
+        # Keep the old unique-id so existing calendar entity is reused.
         super().__init__(coordinator, entry, "agenda")
 
     def _events(self, start, end):
@@ -105,22 +89,17 @@ class AgendaCalendar(BaseCalendar):
             if not _in_range(d, start, end):
                 continue
 
-            title = x.get("title") or x.get("subject") or "Wydarzenie Librus"
-            subject = x.get("subject")
             description_parts = []
-            if subject:
-                description_parts.append(f"Przedmiot: {subject}")
+            if x.get("subject"):
+                description_parts.append(f"Przedmiot: {x['subject']}")
             if x.get("number") not in (None, "", "unknown"):
-                description_parts.append(f"Lekcja: {x.get('number')}")
-            if x.get("hour") not in (None, "", "unknown"):
-                description_parts.append(f"Godzina: {x.get('hour')}")
+                description_parts.append(f"Lekcja: {x['number']}")
             if x.get("data"):
-                description_parts.append(str(x.get("data")))
+                description_parts.append(str(x["data"]))
 
-            # Keep schedule entries as all-day events unless Librus provides a reliable clock time.
             out.append(
                 CalendarEvent(
-                    summary=title,
+                    summary=x.get("title") or x.get("kind") or "Kartkówka / klasówka",
                     start=d,
                     end=d + timedelta(days=1),
                     description="\n".join(description_parts),
@@ -184,28 +163,31 @@ class HomeworkCalendar(BaseCalendar):
     def _events(self, start, end):
         out = []
         for x in self.coordinator.data.get("homework", []):
-            d = _date_from_text(x.get("completion_date") or x.get("task_date"))
-            if not d or not _in_range(d, start, end):
+            raw = x.get("completion_date") or x.get("task_date")
+            if not raw:
+                continue
+            try:
+                d = datetime.fromisoformat(str(raw).replace("Z", "+00:00")).date()
+            except Exception:
+                continue
+            if not _in_range(d, start, end):
                 continue
 
             summary = x.get("subject") or x.get("lesson") or "Zadanie domowe"
             if x.get("category"):
                 summary = f"{summary} – {x['category']}"
 
-            description = "\n".join(
-                p for p in [
-                    x.get("lesson"),
-                    f"Nauczyciel: {x.get('teacher')}" if x.get("teacher") else None,
-                    f"Termin: {x.get('completion_date')}" if x.get("completion_date") else None,
-                ] if p
-            )
-
             out.append(
                 CalendarEvent(
                     summary=summary,
                     start=d,
                     end=d + timedelta(days=1),
-                    description=description,
+                    description="\n".join(
+                        p for p in [
+                            x.get("lesson"),
+                            f"Nauczyciel: {x.get('teacher')}" if x.get("teacher") else None,
+                        ] if p
+                    ),
                 )
             )
 

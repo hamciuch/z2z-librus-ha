@@ -10,6 +10,8 @@ from librus_apix.exceptions import AuthorizationError, TokenError
 
 _LOGGER = logging.getLogger(__name__)
 
+TEST_KEYWORDS = ("kartkówka", "kartkowka", "klasówka", "klasowka")
+
 
 class LibrusError(Exception):
     """Base Librus exception."""
@@ -30,7 +32,6 @@ class LibrusClient:
         self._auth_lock = asyncio.Lock()
 
     async def login(self) -> None:
-        """Authenticate with Librus using librus-apix OAuth/cookie flow."""
         async with self._auth_lock:
             try:
                 self._client = await asyncio.to_thread(new_client)
@@ -56,9 +57,7 @@ class LibrusClient:
             await self.login()
 
     async def _run(self, func: Callable, *args):
-        """Run a blocking librus-apix function and re-authenticate once if needed."""
         await self._ensure_login()
-
         for attempt in range(2):
             try:
                 return await asyncio.to_thread(func, self._client, *args)
@@ -75,7 +74,6 @@ class LibrusClient:
                 raise LibrusAuthError(str(err)) from err
 
     async def _optional(self, name: str, func: Callable, *args, default=None):
-        """Fetch a non-critical module. One broken module must not break the integration."""
         try:
             return await self._run(func, *args)
         except Exception as err:
@@ -98,7 +96,6 @@ class LibrusClient:
             "School": info.school,
             "LuckyNumber": info.lucky_number,
             "Login": self.username,
-            # Each Librus login is treated as an independent HA device/config entry.
             "AccountId": self.username,
         }
 
@@ -119,7 +116,6 @@ class LibrusClient:
         }
 
     async def get_grades(self) -> list[dict[str, Any]]:
-        """Return all ordinary and descriptive grades, preserving + / - / np / bz."""
         from librus_apix.grades import get_grades
 
         numeric, _averages, descriptive = await self._run(get_grades, "all")
@@ -130,7 +126,6 @@ class LibrusClient:
                 for grade in grades:
                     result.append(self._grade_to_dict(grade, "numeric", subject))
 
-        # Librus puts some non-numeric marks (+, -, np, bz etc.) here.
         for subject_group in descriptive or []:
             for subject, grades in subject_group.items():
                 for grade in grades:
@@ -149,7 +144,6 @@ class LibrusClient:
             (today + timedelta(days=90)).strftime("%Y-%m-%d"),
             default=[],
         )
-
         return [
             {
                 "lesson": x.lesson,
@@ -163,22 +157,42 @@ class LibrusClient:
             for x in (rows or [])
         ]
 
-    async def get_messages(self, limit: int = 20) -> list[dict[str, Any]]:
-        """Get message headers only. This does not open message contents."""
-        from librus_apix.messages import get_received
+    async def get_messages(self, limit: int = 10) -> list[dict[str, Any]]:
+        """Get message list, including full content for the newest 3."""
+        from librus_apix.messages import get_received, message_content
 
         rows = await self._optional("messages", get_received, 0, default=[])
-        return [
-            {
+        result = []
+
+        for idx, x in enumerate((rows or [])[:limit]):
+            item = {
                 "author": x.author,
-                "title": x.title,
+                "title": x.title.strip(),
                 "date": x.date,
                 "href": x.href,
                 "unread": bool(x.unread),
                 "has_attachment": bool(x.has_attachment),
+                "content": None,
             }
-            for x in (rows or [])[:limit]
-        ]
+
+            # Fetch complete body only for the three newest messages.
+            if idx < 3 and x.href:
+                body = await self._optional(
+                    f"message content {x.href}",
+                    message_content,
+                    x.href,
+                    default=None,
+                )
+                if body is not None:
+                    item["content"] = getattr(body, "content", None)
+                    # Prefer the detail values if available.
+                    item["author"] = getattr(body, "author", None) or item["author"]
+                    item["title"] = (getattr(body, "title", None) or item["title"]).strip()
+                    item["date"] = getattr(body, "date", None) or item["date"]
+
+            result.append(item)
+
+        return result
 
     async def get_attendance(self) -> dict[str, Any]:
         from librus_apix.attendance import get_attendance, get_attendance_frequency
@@ -190,7 +204,7 @@ class LibrusClient:
             default=(None, None, None),
         )
 
-        records: list[dict[str, Any]] = []
+        records = []
         for semester_rows in grouped or []:
             for x in semester_rows or []:
                 records.append(
@@ -208,9 +222,7 @@ class LibrusClient:
                 )
 
         def pct(value):
-            if value is None:
-                return None
-            return round(float(value) * 100, 2)
+            return None if value is None else round(float(value) * 100, 2)
 
         return {
             "records": records,
@@ -227,13 +239,13 @@ class LibrusClient:
     async def get_timetable(self) -> list[dict[str, Any]]:
         from librus_apix.timetable import get_timetable
 
-        # Current + next week, so HA calendar has useful forward data.
+        # Pull 4 weeks. This gives us a fuller subject list even before the first grade.
         mondays = [
-            self._monday_for(date.today()),
-            self._monday_for(date.today() + timedelta(days=7)),
+            self._monday_for(date.today() + timedelta(days=7 * offset))
+            for offset in range(4)
         ]
-        result: list[dict[str, Any]] = []
 
+        result = []
         for monday in mondays:
             week = await self._optional(
                 f"timetable {monday.date()}",
@@ -247,7 +259,7 @@ class LibrusClient:
                         continue
                     result.append(
                         {
-                            "subject": x.subject,
+                            "subject": x.subject.strip(),
                             "teacher_and_classroom": x.teacher_and_classroom,
                             "date": x.date,
                             "date_from": x.date_from,
@@ -258,7 +270,6 @@ class LibrusClient:
                         }
                     )
 
-        # Deduplicate in case weeks overlap due to a parser/site quirk.
         seen = set()
         unique = []
         for row in result:
@@ -268,15 +279,43 @@ class LibrusClient:
                 unique.append(row)
         return unique
 
+    @staticmethod
+    def _is_test_event(event: Any) -> bool:
+        """Keep only kartkówka / klasówka events; drop teacher/vacancy/substitution noise."""
+        parts = [
+            getattr(event, "title", ""),
+            getattr(event, "subject", ""),
+            str(getattr(event, "data", "") or ""),
+        ]
+        haystack = " ".join(str(x) for x in parts).lower()
+        return any(keyword in haystack for keyword in TEST_KEYWORDS)
+
+    @staticmethod
+    def _test_kind(event: Any) -> str:
+        text = " ".join(
+            [
+                str(getattr(event, "title", "") or ""),
+                str(getattr(event, "subject", "") or ""),
+                str(getattr(event, "data", "") or ""),
+            ]
+        ).lower()
+        if "kartkówka" in text or "kartkowka" in text:
+            return "Kartkówka"
+        if "klasówka" in text or "klasowka" in text:
+            return "Klasówka"
+        return "Sprawdzian"
+
     async def get_schedule(self) -> list[dict[str, Any]]:
+        """Return only kartkówki / klasówki from Librus schedule."""
         from librus_apix.schedule import get_schedule
 
         today = date.today()
-        months = {(today.year, today.month)}
-        future = today + timedelta(days=45)
-        months.add((future.year, future.month))
+        months = set()
+        for offset in (0, 31, 62, 93):
+            d = today + timedelta(days=offset)
+            months.add((d.year, d.month))
 
-        result: list[dict[str, Any]] = []
+        result = []
         for year, month in sorted(months):
             schedule = await self._optional(
                 f"schedule {year}-{month:02d}",
@@ -288,11 +327,27 @@ class LibrusClient:
             )
             for day_num, events in (schedule or {}).items():
                 for x in events or []:
+                    if not self._is_test_event(x):
+                        continue
+
+                    kind = self._test_kind(x)
+                    subject = (x.subject or "").strip()
+                    title = (x.title or "").strip()
+
+                    # Avoid ugly "Nauczyciel: ..." as the HA event title.
+                    summary = kind
+                    if subject and "nauczyciel" not in subject.lower():
+                        summary = f"{kind} – {subject}"
+                    elif title and "nauczyciel" not in title.lower():
+                        summary = f"{kind} – {title}"
+
                     result.append(
                         {
                             "date": f"{year:04d}-{month:02d}-{int(day_num):02d}",
-                            "title": x.title,
-                            "subject": x.subject,
+                            "kind": kind,
+                            "title": summary,
+                            "raw_title": title,
+                            "subject": subject,
                             "data": x.data,
                             "day": x.day,
                             "number": x.number,
@@ -300,14 +355,11 @@ class LibrusClient:
                             "href": x.href,
                         }
                     )
+
+        result.sort(key=lambda x: x["date"])
         return result
 
     async def fetch_core(self) -> dict[str, Any]:
-        """Fetch all supported modules.
-
-        Student and grades are the core. Optional modules are isolated so that a school
-        with one disabled Librus module still gets the rest of the integration.
-        """
         student = await self.get_student()
 
         grades, homework, messages, attendance, timetable, schedule = await asyncio.gather(

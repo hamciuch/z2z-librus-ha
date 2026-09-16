@@ -29,6 +29,22 @@ def _ident(data, fallback):
     return str(m.get("AccountId") or m.get("Login") or fallback)
 
 
+def _all_subjects(data):
+    """Subjects from both grades and timetable, so zero-grade subjects also exist."""
+    subjects = set()
+    for g in data.get("grades", []):
+        if g.get("subject_name"):
+            subjects.add(g["subject_name"].strip())
+    for lesson in data.get("timetable", []):
+        if lesson.get("subject"):
+            # Multiple subjects can occasionally be joined with " / ".
+            for subject in lesson["subject"].split(" / "):
+                subject = subject.strip()
+                if subject:
+                    subjects.add(subject)
+    return sorted(subjects, key=str.casefold)
+
+
 async def async_setup_entry(hass, entry, async_add_entities):
     c = hass.data[DOMAIN][entry.entry_id]
 
@@ -39,14 +55,17 @@ async def async_setup_entry(hass, entry, async_add_entities):
         AttendanceEntity(c, entry),
         HomeworkEntity(c, entry),
         MessagesEntity(c, entry),
+        RecentMessageEntity(c, entry, 0),
+        RecentMessageEntity(c, entry, 1),
+        RecentMessageEntity(c, entry, 2),
         NextLessonEntity(c, entry),
         NextEventEntity(c, entry),
     ]
 
-    subjects = sorted(
-        {g.get("subject_name") for g in c.data.get("grades", []) if g.get("subject_name")}
-    )
-    entities += [SubjectGradesEntity(c, entry, subject) for subject in subjects]
+    entities += [
+        SubjectGradesEntity(c, entry, subject)
+        for subject in _all_subjects(c.data)
+    ]
 
     async_add_entities(entities)
 
@@ -155,13 +174,15 @@ class SubjectGradesEntity(Base):
 
     @property
     def native_value(self):
-        return ", ".join(g.get("display_value", "") for g in self.rows()) or "brak"
+        rows = self.rows()
+        return ", ".join(g.get("display_value", "") for g in rows) if rows else "brak"
 
     @property
     def extra_state_attributes(self):
         rows = self.rows()
         return {
             "subject": self.subject,
+            "grade_count": len(rows),
             "grades": rows[-150:],
             "values": [g.get("display_value") for g in rows],
         }
@@ -216,15 +237,52 @@ class MessagesEntity(Base):
 
     @property
     def native_value(self):
-        messages = self.coordinator.data.get("messages", [])
-        return sum(1 for m in messages if m.get("unread"))
+        return len(self.coordinator.data.get("messages", []))
 
     @property
     def extra_state_attributes(self):
         messages = self.coordinator.data.get("messages", [])
         return {
             "total_loaded": len(messages),
-            "messages": messages,
+            "latest_href": messages[0].get("href") if messages else None,
+            "latest_title": messages[0].get("title") if messages else None,
+            # Only expose the newest three to keep state attributes compact.
+            "messages": messages[:3],
+        }
+
+
+class RecentMessageEntity(Base):
+    _attr_icon = "mdi:email-open-outline"
+
+    def __init__(self, coordinator, entry, index):
+        super().__init__(coordinator, entry)
+        self.index = index
+        self._attr_name = f"Wiadomość {index + 1}"
+
+    @property
+    def unique_id(self):
+        return f"{_ident(self.coordinator.data, self.entry.entry_id)}_message_{self.index + 1}"
+
+    def _msg(self):
+        rows = self.coordinator.data.get("messages", [])
+        return rows[self.index] if len(rows) > self.index else None
+
+    @property
+    def native_value(self):
+        msg = self._msg()
+        return msg.get("title") if msg else "brak"
+
+    @property
+    def extra_state_attributes(self):
+        msg = self._msg()
+        if not msg:
+            return {}
+        return {
+            "author": msg.get("author"),
+            "date": msg.get("date"),
+            "content": msg.get("content"),
+            "message_id": msg.get("href"),
+            "has_attachment": msg.get("has_attachment"),
         }
 
 
@@ -269,12 +327,12 @@ class NextLessonEntity(Base):
 
 
 class NextEventEntity(Base):
-    _attr_name = "Najbliższe wydarzenie"
-    _attr_icon = "mdi:calendar-alert"
+    _attr_name = "Najbliższa kartkówka lub klasówka"
+    _attr_icon = "mdi:clipboard-text-clock"
 
     @property
     def unique_id(self):
-        return f"{_ident(self.coordinator.data, self.entry.entry_id)}_next_event"
+        return f"{_ident(self.coordinator.data, self.entry.entry_id)}_next_test"
 
     def _next(self):
         today = datetime.now().date()
@@ -301,6 +359,7 @@ class NextEventEntity(Base):
         d, x = row
         return {
             "date": d.isoformat(),
+            "kind": x.get("kind"),
             "subject": x.get("subject"),
             "lesson_number": x.get("number"),
             "hour": x.get("hour"),
