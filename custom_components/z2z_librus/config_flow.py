@@ -61,13 +61,12 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     def async_get_options_flow(config_entry):
-        return LibrusOptionsFlow(config_entry)
+        # Home Assistant injects config_entry into OptionsFlow.
+        # Do not assign self.config_entry manually; it is managed by HA.
+        return LibrusOptionsFlow()
 
 
-class LibrusOptionsFlow(config_entries.OptionsFlow):
-    def __init__(self, config_entry):
-        self.config_entry = config_entry
-
+class LibrusOptionsFlow(config_entries.OptionsFlowWithReload):
     async def async_step_init(self, user_input=None) -> FlowResult:
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
