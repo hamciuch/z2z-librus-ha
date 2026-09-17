@@ -393,10 +393,64 @@ class LibrusClient:
             self.get_schedule(),
         )
 
-        # Keep the existing "schedule" key test-only, so the
-        # "Najbliższa kartkówka lub klasówka" sensor continues to work exactly
-        # as before. The calendar uses "school_events".
-        tests = [x for x in school_events if x.get("is_test")]
+        # Keep the existing "schedule" key test-only, but remove today's
+        # tests immediately after their lesson has ended. The existing
+        # NextEventEntity selects by date, so filtering here makes it advance
+        # to the next real upcoming test instead of keeping a morning test
+        # visible until midnight.
+        now = datetime.now()
+        tests = []
+
+        for event in school_events:
+            if not event.get("is_test"):
+                continue
+
+            try:
+                event_date = datetime.fromisoformat(event["date"]).date()
+            except Exception:
+                continue
+
+            if event_date < now.date():
+                continue
+
+            if event_date > now.date():
+                tests.append(event)
+                continue
+
+            # Today's test: resolve its lesson end time from timetable.
+            number = event.get("number")
+            event_end = None
+
+            try:
+                number = int(number)
+            except (TypeError, ValueError):
+                number = None
+
+            if number is not None:
+                for lesson in timetable:
+                    try:
+                        lesson_number = int(lesson.get("number"))
+                    except (TypeError, ValueError):
+                        continue
+
+                    if (
+                        str(lesson.get("date") or "") == str(event.get("date") or "")
+                        and lesson_number == number
+                        and lesson.get("date_to")
+                    ):
+                        try:
+                            event_end = datetime.fromisoformat(
+                                f"{event['date']}T{lesson['date_to']}"
+                            )
+                        except Exception:
+                            event_end = None
+                        break
+
+            # If the lesson time is known, keep the test only until it ends.
+            # If timing cannot be resolved, keep it for today rather than
+            # guessing and accidentally hiding a valid event.
+            if event_end is None or event_end > now:
+                tests.append(event)
 
         return {
             "me": {"Me": student},
