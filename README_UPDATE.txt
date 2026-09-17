@@ -1,15 +1,8 @@
-Z2Z Librus v0.3.7
+Z2Z Librus v0.3.8
 
-Nowość:
-- osobna godzina obiadu dla każdego dnia od poniedziałku do piątku,
-- każdy obiad nadal trwa 15 minut,
-- każde konto Librus ma własne ustawienia, więc Gabi i Wiktor mogą mieć różne godziny.
-
-Pozostają zmiany z v0.3.6:
-- pełne wydarzenia szkolne,
-- filtrowanie wpisów technicznych,
-- sensor najbliższej kartkówki nadal tylko dla testów.
-
-Po podmianie katalogu custom_components/z2z_librus uruchom ponownie Home Assistant.
-Następnie:
-Ustawienia -> Urządzenia i usługi -> Z2Z Librus -> Konfiguruj.
+Poprawki terminarza:
+- wpisy techniczne typu „Jan Kowalski na lekcji nr: 4 (...)” są usuwane,
+- jeśli wydarzenie ma numer lekcji, pobieramy godziny tej lekcji z planu,
+- dzięki temu hideFinishedEvents: true ukryje wydarzenie po jego zakończeniu,
+- wydarzenia bez określonej godziny pozostają całodniowe i znikają po końcu dnia,
+- osobne godziny obiadu dla każdego dnia tygodnia nadal działają.

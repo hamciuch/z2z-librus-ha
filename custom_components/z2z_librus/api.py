@@ -22,6 +22,8 @@ SCHEDULE_NOISE_KEYWORDS = (
     "zastepstwo",
     "nieobecność nauczyciela",
     "nieobecnosc nauczyciela",
+    "na lekcji nr:",
+    "na lekcji nr ",
 )
 
 

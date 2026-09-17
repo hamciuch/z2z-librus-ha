@@ -140,26 +140,82 @@ class AgendaCalendar(BaseCalendar):
     def __init__(self, coordinator, entry):
         super().__init__(coordinator, entry, "agenda")
 
+    def _lesson_times_for_event(self, event):
+        event_date = str(event.get("date") or "")
+        number = event.get("number")
+
+        if not event_date or number in (None, "", 0):
+            return None
+
+        try:
+            number = int(number)
+        except (TypeError, ValueError):
+            return None
+
+        for lesson in self.coordinator.data.get("timetable", []):
+            try:
+                lesson_number = int(lesson.get("number"))
+            except (TypeError, ValueError):
+                continue
+
+            if (
+                str(lesson.get("date") or "") == event_date
+                and lesson_number == number
+                and lesson.get("date_from")
+                and lesson.get("date_to")
+            ):
+                return lesson.get("date_from"), lesson.get("date_to")
+
+        return None
+
     def _events(self, start, end):
         out = []
+        tz = datetime.now().astimezone().tzinfo
+
         for x in self.coordinator.data.get("school_events", []):
             try:
                 d = datetime.fromisoformat(x["date"]).date()
             except Exception:
                 continue
+
             if not _in_range(d, start, end):
                 continue
 
             description = _test_description(x.get("data"))
+            lesson_times = self._lesson_times_for_event(x)
 
+            if lesson_times:
+                date_from, date_to = lesson_times
+                try:
+                    dt_start = datetime.fromisoformat(
+                        f"{x['date']}T{date_from}"
+                    ).replace(tzinfo=tz)
+                    dt_end = datetime.fromisoformat(
+                        f"{x['date']}T{date_to}"
+                    ).replace(tzinfo=tz)
+
+                    out.append(
+                        CalendarEvent(
+                            summary=x.get("title") or x.get("kind") or "Wydarzenie szkolne",
+                            start=dt_start,
+                            end=dt_end,
+                            description=description,
+                        )
+                    )
+                    continue
+                except Exception:
+                    pass
+
+            # No reliable hour/lesson number -> keep as all-day.
             out.append(
                 CalendarEvent(
-                    summary=x.get("title") or x.get("kind") or "Kartkówka / klasówka",
+                    summary=x.get("title") or x.get("kind") or "Wydarzenie szkolne",
                     start=d,
                     end=d + timedelta(days=1),
                     description=description,
                 )
             )
+
         return sorted(out, key=lambda e: e.start)
 
 
