@@ -12,6 +12,18 @@ _LOGGER = logging.getLogger(__name__)
 
 TEST_KEYWORDS = ("kartkówka", "kartkowka", "klasówka", "klasowka")
 
+# Technical entries that should not appear in the school-events calendar.
+# Only title + subject are checked. We intentionally do NOT scan event.data,
+# because valid events often contain metadata such as "Nauczyciel".
+SCHEDULE_NOISE_KEYWORDS = (
+    "nauczyciel:",
+    "wakat",
+    "zastępstwo",
+    "zastepstwo",
+    "nieobecność nauczyciela",
+    "nieobecnosc nauczyciela",
+)
+
 
 class LibrusError(Exception):
     """Base Librus exception."""
@@ -175,7 +187,6 @@ class LibrusClient:
                 "content": None,
             }
 
-            # Fetch complete body only for the three newest messages.
             if idx < 3 and x.href:
                 body = await self._optional(
                     f"message content {x.href}",
@@ -185,7 +196,6 @@ class LibrusClient:
                 )
                 if body is not None:
                     item["content"] = getattr(body, "content", None)
-                    # Prefer the detail values if available.
                     item["author"] = getattr(body, "author", None) or item["author"]
                     item["title"] = (getattr(body, "title", None) or item["title"]).strip()
                     item["date"] = getattr(body, "date", None) or item["date"]
@@ -239,7 +249,6 @@ class LibrusClient:
     async def get_timetable(self) -> list[dict[str, Any]]:
         from librus_apix.timetable import get_timetable
 
-        # Pull 4 weeks. This gives us a fuller subject list even before the first grade.
         mondays = [
             self._monday_for(date.today() + timedelta(days=7 * offset))
             for offset in range(4)
@@ -280,8 +289,15 @@ class LibrusClient:
         return unique
 
     @staticmethod
+    def _is_schedule_noise(event: Any) -> bool:
+        """Drop technical entries, but preserve actual school events."""
+        title = str(getattr(event, "title", "") or "").strip().lower()
+        subject = str(getattr(event, "subject", "") or "").strip().lower()
+        haystack = f"{title} {subject}"
+        return any(keyword in haystack for keyword in SCHEDULE_NOISE_KEYWORDS)
+
+    @staticmethod
     def _is_test_event(event: Any) -> bool:
-        """Keep only kartkówka / klasówka events; drop teacher/vacancy/substitution noise."""
         parts = [
             getattr(event, "title", ""),
             getattr(event, "subject", ""),
@@ -306,7 +322,7 @@ class LibrusClient:
         return "Sprawdzian"
 
     async def get_schedule(self) -> list[dict[str, Any]]:
-        """Return only kartkówki / klasówki from Librus schedule."""
+        """Return all meaningful school events from the Librus schedule."""
         from librus_apix.schedule import get_schedule
 
         today = date.today()
@@ -327,24 +343,28 @@ class LibrusClient:
             )
             for day_num, events in (schedule or {}).items():
                 for x in events or []:
-                    if not self._is_test_event(x):
+                    if self._is_schedule_noise(x):
                         continue
 
-                    kind = self._test_kind(x)
+                    is_test = self._is_test_event(x)
+                    kind = self._test_kind(x) if is_test else "Wydarzenie"
                     subject = (x.subject or "").strip()
                     title = (x.title or "").strip()
 
-                    # Avoid ugly "Nauczyciel: ..." as the HA event title.
-                    summary = kind
-                    if subject and "nauczyciel" not in subject.lower():
-                        summary = f"{kind} – {subject}"
-                    elif title and "nauczyciel" not in title.lower():
-                        summary = f"{kind} – {title}"
+                    if is_test:
+                        summary = kind
+                        if subject and "nauczyciel" not in subject.lower():
+                            summary = f"{kind} – {subject}"
+                        elif title and "nauczyciel" not in title.lower():
+                            summary = f"{kind} – {title}"
+                    else:
+                        summary = title or subject or "Wydarzenie szkolne"
 
                     result.append(
                         {
                             "date": f"{year:04d}-{month:02d}-{int(day_num):02d}",
                             "kind": kind,
+                            "is_test": is_test,
                             "title": summary,
                             "raw_title": title,
                             "subject": subject,
@@ -356,13 +376,13 @@ class LibrusClient:
                         }
                     )
 
-        result.sort(key=lambda x: x["date"])
+        result.sort(key=lambda x: (x["date"], str(x.get("hour") or ""), x["title"]))
         return result
 
     async def fetch_core(self) -> dict[str, Any]:
         student = await self.get_student()
 
-        grades, homework, messages, attendance, timetable, schedule = await asyncio.gather(
+        grades, homework, messages, attendance, timetable, school_events = await asyncio.gather(
             self.get_grades(),
             self.get_homework(),
             self.get_messages(),
@@ -371,6 +391,11 @@ class LibrusClient:
             self.get_schedule(),
         )
 
+        # Keep the existing "schedule" key test-only, so the
+        # "Najbliższa kartkówka lub klasówka" sensor continues to work exactly
+        # as before. The calendar uses "school_events".
+        tests = [x for x in school_events if x.get("is_test")]
+
         return {
             "me": {"Me": student},
             "grades": grades,
@@ -378,5 +403,6 @@ class LibrusClient:
             "messages": messages,
             "attendance": attendance,
             "timetable": timetable,
-            "schedule": schedule,
+            "schedule": tests,
+            "school_events": school_events,
         }

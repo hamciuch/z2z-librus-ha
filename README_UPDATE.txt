@@ -1,20 +1,15 @@
-Z2Z Librus v0.3.5 – poprawka konfiguracji obiadu
+Z2Z Librus v0.3.7
 
-Naprawia błąd 500 przy otwieraniu "Konfiguruj".
+Nowość:
+- osobna godzina obiadu dla każdego dnia od poniedziałku do piątku,
+- każdy obiad nadal trwa 15 minut,
+- każde konto Librus ma własne ustawienia, więc Gabi i Wiktor mogą mieć różne godziny.
 
-Przyczyna:
-Poprzednia wersja ręcznie przypisywała self.config_entry w OptionsFlow.
-W nowszym Home Assistant config_entry jest zarządzane przez framework.
+Pozostają zmiany z v0.3.6:
+- pełne wydarzenia szkolne,
+- filtrowanie wpisów technicznych,
+- sensor najbliższej kartkówki nadal tylko dla testów.
 
-Podmień katalog:
-custom_components/z2z_librus/
-
-Po podmianie:
-1. Uruchom ponownie Home Assistant.
-2. Ustawienia -> Urządzenia i usługi -> Z2Z Librus -> Konfiguruj.
-3. Ustaw:
-   - Pokazuj obiad w planie
-   - Godzina obiadu, np. 11:45
-4. Zapisz.
-
-Opcje automatycznie przeładują integrację.
+Po podmianie katalogu custom_components/z2z_librus uruchom ponownie Home Assistant.
+Następnie:
+Ustawienia -> Urządzenia i usługi -> Z2Z Librus -> Konfiguruj.

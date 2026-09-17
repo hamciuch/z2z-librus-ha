@@ -10,7 +10,11 @@ from homeassistant.helpers import selector
 from .api import LibrusAuthError, LibrusClient
 from .const import (
     CONF_LUNCH_ENABLED,
-    CONF_LUNCH_TIME,
+    CONF_LUNCH_TIME_FRIDAY,
+    CONF_LUNCH_TIME_MONDAY,
+    CONF_LUNCH_TIME_THURSDAY,
+    CONF_LUNCH_TIME_TUESDAY,
+    CONF_LUNCH_TIME_WEDNESDAY,
     DEFAULT_LUNCH_ENABLED,
     DEFAULT_LUNCH_TIME,
     DOMAIN,
@@ -32,7 +36,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 await client.login()
                 student = await client.get_student()
 
-                # Multi-student support: each Librus account/login is a separate entry.
                 unique = str(student.get("AccountId") or user_input[CONF_USERNAME])
                 await self.async_set_unique_id(unique)
                 self._abort_if_unique_id_configured()
@@ -61,8 +64,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     def async_get_options_flow(config_entry):
-        # Home Assistant injects config_entry into OptionsFlow.
-        # Do not assign self.config_entry manually; it is managed by HA.
         return LibrusOptionsFlow()
 
 
@@ -71,24 +72,33 @@ class LibrusOptionsFlow(config_entries.OptionsFlowWithReload):
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
-        current_enabled = self.config_entry.options.get(
-            CONF_LUNCH_ENABLED,
-            DEFAULT_LUNCH_ENABLED,
-        )
-        current_time = self.config_entry.options.get(
-            CONF_LUNCH_TIME,
-            DEFAULT_LUNCH_TIME,
-        )
+        options = self.config_entry.options
 
         schema = vol.Schema(
             {
                 vol.Optional(
                     CONF_LUNCH_ENABLED,
-                    default=current_enabled,
+                    default=options.get(CONF_LUNCH_ENABLED, DEFAULT_LUNCH_ENABLED),
                 ): selector.BooleanSelector(),
                 vol.Optional(
-                    CONF_LUNCH_TIME,
-                    default=current_time,
+                    CONF_LUNCH_TIME_MONDAY,
+                    default=options.get(CONF_LUNCH_TIME_MONDAY, DEFAULT_LUNCH_TIME),
+                ): selector.TimeSelector(),
+                vol.Optional(
+                    CONF_LUNCH_TIME_TUESDAY,
+                    default=options.get(CONF_LUNCH_TIME_TUESDAY, DEFAULT_LUNCH_TIME),
+                ): selector.TimeSelector(),
+                vol.Optional(
+                    CONF_LUNCH_TIME_WEDNESDAY,
+                    default=options.get(CONF_LUNCH_TIME_WEDNESDAY, DEFAULT_LUNCH_TIME),
+                ): selector.TimeSelector(),
+                vol.Optional(
+                    CONF_LUNCH_TIME_THURSDAY,
+                    default=options.get(CONF_LUNCH_TIME_THURSDAY, DEFAULT_LUNCH_TIME),
+                ): selector.TimeSelector(),
+                vol.Optional(
+                    CONF_LUNCH_TIME_FRIDAY,
+                    default=options.get(CONF_LUNCH_TIME_FRIDAY, DEFAULT_LUNCH_TIME),
                 ): selector.TimeSelector(),
             }
         )

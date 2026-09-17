@@ -9,7 +9,11 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
     CONF_LUNCH_ENABLED,
-    CONF_LUNCH_TIME,
+    CONF_LUNCH_TIME_FRIDAY,
+    CONF_LUNCH_TIME_MONDAY,
+    CONF_LUNCH_TIME_THURSDAY,
+    CONF_LUNCH_TIME_TUESDAY,
+    CONF_LUNCH_TIME_WEDNESDAY,
     DEFAULT_LUNCH_ENABLED,
     DEFAULT_LUNCH_TIME,
     DOMAIN,
@@ -130,15 +134,15 @@ class BaseCalendar(CoordinatorEntity, CalendarEntity):
 
 
 class AgendaCalendar(BaseCalendar):
-    _attr_name = "Kartkówki i klasówki"
-    _attr_icon = "mdi:clipboard-text-clock"
+    _attr_name = "Wydarzenia szkolne"
+    _attr_icon = "mdi:calendar-star"
 
     def __init__(self, coordinator, entry):
         super().__init__(coordinator, entry, "agenda")
 
     def _events(self, start, end):
         out = []
-        for x in self.coordinator.data.get("schedule", []):
+        for x in self.coordinator.data.get("school_events", []):
             try:
                 d = datetime.fromisoformat(x["date"]).date()
             except Exception:
@@ -170,9 +174,13 @@ class TimetableCalendar(BaseCalendar):
         if not self.entry.options.get(CONF_LUNCH_ENABLED, DEFAULT_LUNCH_ENABLED):
             return []
 
-        lunch_time = _parse_lunch_time(
-            self.entry.options.get(CONF_LUNCH_TIME, DEFAULT_LUNCH_TIME)
-        )
+        lunch_options = {
+            0: CONF_LUNCH_TIME_MONDAY,
+            1: CONF_LUNCH_TIME_TUESDAY,
+            2: CONF_LUNCH_TIME_WEDNESDAY,
+            3: CONF_LUNCH_TIME_THURSDAY,
+            4: CONF_LUNCH_TIME_FRIDAY,
+        }
 
         first_day = start.date() if isinstance(start, datetime) else start
         last_day = end.date() if isinstance(end, datetime) else end
@@ -181,8 +189,12 @@ class TimetableCalendar(BaseCalendar):
         day = first_day
 
         while day <= last_day:
-            # School lunch: Monday-Friday.
-            if day.weekday() < 5:
+            option_key = lunch_options.get(day.weekday())
+
+            if option_key is not None:
+                lunch_time = _parse_lunch_time(
+                    self.entry.options.get(option_key, DEFAULT_LUNCH_TIME)
+                )
                 dt_start = datetime.combine(day, lunch_time).replace(tzinfo=tz)
                 dt_end = dt_start + timedelta(minutes=LUNCH_DURATION_MINUTES)
 

@@ -23,10 +23,14 @@
     "step": {
       "init": {
         "title": "Ustawienia planu",
-        "description": "Ustaw godzinę obiadu. Obiad jest dodawany do planu od poniedziałku do piątku i trwa 15 minut.",
+        "description": "Ustaw osobną godzinę obiadu dla każdego dnia tygodnia. Każdy obiad trwa 15 minut.",
         "data": {
           "lunch_enabled": "Pokazuj obiad w planie",
-          "lunch_time": "Godzina obiadu"
+          "lunch_time_monday": "Poniedziałek – godzina obiadu",
+          "lunch_time_tuesday": "Wtorek – godzina obiadu",
+          "lunch_time_wednesday": "Środa – godzina obiadu",
+          "lunch_time_thursday": "Czwartek – godzina obiadu",
+          "lunch_time_friday": "Piątek – godzina obiadu"
         }
       }
     }
