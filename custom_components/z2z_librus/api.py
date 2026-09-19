@@ -4,6 +4,7 @@ import asyncio
 import logging
 import re
 import time
+from collections import Counter
 from datetime import date, datetime, timedelta
 from typing import Any, Callable
 
@@ -71,6 +72,18 @@ CANCELLATION_TITLE_RE = re.compile(
 # Text Librus itself may put in the timetable cell of a cancelled lesson.
 TIMETABLE_CANCELLED_MARKERS = ("odwołan", "odwolan")
 
+# Replying to messages (opt-in). The recipient list is cached because it hardly
+# ever changes; a failed download is retried after a short pause.
+RECIPIENTS_TTL_SECONDS = 6 * 3600
+RECIPIENTS_FAIL_TTL_SECONDS = 30 * 60
+# librus-apix' send_message() always reports failure (it reads .status_code from
+# a BeautifulSoup object), so the server's own answer text is interpreted here.
+SEND_FAILURE_RE = re.compile(
+    r"nie\s+zosta|b[łl][ąa]d|niepoprawn|nie\s+mo[żz]na|nie\s+wybrano|brak\s+dost",
+    re.IGNORECASE,
+)
+SEND_SUCCESS_RE = re.compile(r"wys[łl]an", re.IGNORECASE)
+
 
 class LibrusError(Exception):
     """Base Librus exception."""
@@ -78,6 +91,95 @@ class LibrusError(Exception):
 
 class LibrusAuthError(LibrusError):
     """Authentication failed."""
+
+
+def _clean_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").replace("\xa0", " ")).strip()
+
+
+def classify_send_result(text: str) -> str | None:
+    """'failed' / 'sent' from Librus' answer text, or None when it is unclear."""
+    if not text:
+        return None
+    if SEND_FAILURE_RE.search(text):
+        return "failed"
+    if SEND_SUCCESS_RE.search(text):
+        return "sent"
+    return None
+
+
+def _fetch_recipients_sync(client) -> list[dict[str, str]]:
+    """All people the parent may write to: [{"id", "name", "group"}]."""
+    from bs4 import BeautifulSoup
+    from librus_apix.helpers import no_access_check
+
+    soup = no_access_check(
+        BeautifulSoup(client.get(client.RECIPIENT_GROUPS_URL).text, "lxml")
+    )
+    groups: list[str] = []
+    for radio in soup.select("input.recipiantTypeRadio"):
+        value = str(radio.attrs.get("value", "")).strip()
+        if value and value not in groups:
+            groups.append(value)
+
+    result: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for group in groups:
+        payload = {
+            "typAdresata": group,
+            "poprzednia": "5",
+            "tabZaznaczonych": "",
+            "czyWirtualneKlasy": False,
+            "idGrupy": "0",
+        }
+        group_soup = no_access_check(
+            BeautifulSoup(client.post(client.RECIPIENTS_URL, data=payload).text, "lxml")
+        )
+        for label in group_soup.select("label"):
+            name = _clean_text(label.get_text(" "))
+            rid = str(label.attrs.get("for", "_")).split("_")[-1].strip()
+            if not name or not re.fullmatch(r"\w+", rid) or rid in seen:
+                continue
+            seen.add(rid)
+            result.append({"id": rid, "name": name, "group": group})
+    return result
+
+
+def _sent_snapshot_sync(client) -> list[tuple[str, str]]:
+    """(title, date) of the first page of the 'Wysłane' folder."""
+    from librus_apix.messages import get_sent
+
+    return [
+        (_clean_text(x.title), _clean_text(x.date)) for x in get_sent(client, 0)
+    ]
+
+
+def _post_message_sync(client, recipient_id: str, title: str, content: str) -> str:
+    """Same request as librus-apix' send_message(); returns the answer HTML."""
+    payload = {
+        "filtrUzytkownikow": "0",
+        "idPojemnika": "",
+        "DoKogo": [recipient_id],
+        "Rodzaj": "0",
+        "temat": title,
+        "tresc": content,
+        "poprzednia": "5",
+        "fileStorageIdentifier": "",
+        "wyslij": "Wyślij",
+    }
+    return client.post(client.SEND_MESSAGE_URL, data=payload).text
+
+
+def _parse_send_result(html: str) -> tuple[str, bool]:
+    """(text of div.container-background > p, session-expired flag)."""
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "lxml")
+    heading = soup.select_one("h2.inside")
+    if heading is not None and "Brak dostępu" in heading.get_text():
+        return "", True
+    paragraph = soup.select_one("div.container-background > p")
+    return (_clean_text(paragraph.get_text(" ")) if paragraph else ""), False
 
 
 class LibrusClient:
@@ -91,6 +193,7 @@ class LibrusClient:
         self._auth_lock = asyncio.Lock()
         self._detail_cache: dict[str, tuple[float, dict[str, str]]] = {}
         self._detail_budget = DETAIL_MAX_FETCH
+        self._recipients_cache: tuple[float, list[dict[str, str]]] | None = None
 
     async def login(self) -> None:
         async with self._auth_lock:
@@ -252,6 +355,91 @@ class LibrusClient:
             result.append(item)
 
         return result
+
+    async def get_recipients(self, force: bool = False) -> list[dict[str, str]]:
+        """Recipients the parent may write to (cached)."""
+        now = time.monotonic()
+        cached = self._recipients_cache
+        if cached and not force and cached[0] > now:
+            return cached[1]
+
+        rows = await self._optional("recipients", _fetch_recipients_sync, default=None)
+        if rows is None:
+            old = cached[1] if cached else []
+            self._recipients_cache = (now + RECIPIENTS_FAIL_TTL_SECONDS, old)
+            return old
+
+        self._recipients_cache = (now + RECIPIENTS_TTL_SECONDS, rows)
+        return rows
+
+    async def send_message(
+        self, recipient_id: str, title: str, content: str
+    ) -> dict[str, Any]:
+        """Send a message to one recipient.
+
+        Returns {"status": "sent" | "failed" | "unknown", "message": str,
+        "verified": bool | None}. The POST is sent exactly once - it is never
+        retried automatically, because a retry could deliver it twice.
+        """
+        # Session check + snapshot of the "Wysłane" folder (safe to retry).
+        before = await self._optional(
+            "sent messages (before)", _sent_snapshot_sync, default=None
+        )
+        await self._ensure_login()
+
+        try:
+            html = await asyncio.to_thread(
+                _post_message_sync, self._client, recipient_id, title, content
+            )
+        except (TokenError, AuthorizationError):
+            self._client = None
+            self._token = None
+            return {
+                "status": "failed",
+                "message": "Sesja Librus wygasła - wiadomość nie została wysłana, spróbuj ponownie.",
+                "verified": None,
+            }
+        except Exception as err:  # network error: it may or may not have arrived
+            _LOGGER.warning("Librus send_message request failed: %s", err)
+            return {
+                "status": "unknown",
+                "message": f"Błąd połączenia podczas wysyłania ({err}). Sprawdź folder Wysłane w Librusie.",
+                "verified": None,
+            }
+
+        text, no_access = await asyncio.to_thread(_parse_send_result, html)
+        if no_access:
+            self._client = None
+            self._token = None
+            return {
+                "status": "failed",
+                "message": "Librus odmówił dostępu (sesja wygasła) - wiadomość nie została wysłana.",
+                "verified": None,
+            }
+
+        verdict = classify_send_result(text)
+        if verdict == "failed":
+            return {"status": "failed", "message": text, "verified": None}
+        if verdict == "sent":
+            return {"status": "sent", "message": text, "verified": None}
+
+        # Unclear answer: look for the message in the "Wysłane" folder.
+        after = await self._optional(
+            "sent messages (after)", _sent_snapshot_sync, default=None
+        )
+        if before is not None and after is not None:
+            new_rows = Counter(after) - Counter(before)
+            wanted = _clean_text(title).casefold()
+            if any(row_title.casefold() == wanted for row_title, _ in new_rows):
+                return {"status": "sent", "message": text, "verified": True}
+
+        _LOGGER.warning("Librus send_message: unclear answer %r", text[:200])
+        return {
+            "status": "unknown",
+            "message": (text or "Librus nie zwrócił czytelnej odpowiedzi")
+            + " - nie udało się potwierdzić wysłania, sprawdź folder Wysłane.",
+            "verified": False,
+        }
 
     async def get_attendance(self) -> dict[str, Any]:
         from librus_apix.attendance import get_attendance, get_attendance_frequency

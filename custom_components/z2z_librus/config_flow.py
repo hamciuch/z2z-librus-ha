@@ -15,8 +15,10 @@ from .const import (
     CONF_LUNCH_TIME_THURSDAY,
     CONF_LUNCH_TIME_TUESDAY,
     CONF_LUNCH_TIME_WEDNESDAY,
+    CONF_REPLIES_ENABLED,
     DEFAULT_LUNCH_ENABLED,
     DEFAULT_LUNCH_TIME,
+    DEFAULT_REPLIES_ENABLED,
     DOMAIN,
 )
 
@@ -76,6 +78,10 @@ class LibrusOptionsFlow(config_entries.OptionsFlowWithReload):
 
         schema = vol.Schema(
             {
+                vol.Optional(
+                    CONF_REPLIES_ENABLED,
+                    default=options.get(CONF_REPLIES_ENABLED, DEFAULT_REPLIES_ENABLED),
+                ): selector.BooleanSelector(),
                 vol.Optional(
                     CONF_LUNCH_ENABLED,
                     default=options.get(CONF_LUNCH_ENABLED, DEFAULT_LUNCH_ENABLED),

@@ -7,7 +7,9 @@ from homeassistant.components.sensor import SensorEntity
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from homeassistant.core import callback
+
+from .const import CONF_REPLIES_ENABLED, DEFAULT_REPLIES_ENABLED, DOMAIN
 
 
 def _me(data):
@@ -61,6 +63,9 @@ async def async_setup_entry(hass, entry, async_add_entities):
         NextLessonEntity(c, entry),
         NextEventEntity(c, entry),
     ]
+
+    if entry.options.get(CONF_REPLIES_ENABLED, DEFAULT_REPLIES_ENABLED):
+        entities.append(SendStatusEntity(c, entry))
 
     entities += [
         SubjectGradesEntity(c, entry, subject)
@@ -284,6 +289,33 @@ class RecentMessageEntity(Base):
             "message_id": msg.get("href"),
             "has_attachment": msg.get("has_attachment"),
         }
+
+
+class SendStatusEntity(Base):
+    """Result of the last message sent from Home Assistant."""
+
+    _attr_name = "Status wysyłki"
+    _attr_icon = "mdi:email-fast-outline"
+
+    @property
+    def unique_id(self):
+        return f"{_ident(self.coordinator.data, self.entry.entry_id)}_send_status"
+
+    @property
+    def native_value(self):
+        return self.coordinator.draft.status
+
+    @property
+    def extra_state_attributes(self):
+        return dict(self.coordinator.draft.detail)
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(self.coordinator.draft.add_listener(self._draft_changed))
+
+    @callback
+    def _draft_changed(self) -> None:
+        self.async_write_ha_state()
 
 
 class NextLessonEntity(Base):

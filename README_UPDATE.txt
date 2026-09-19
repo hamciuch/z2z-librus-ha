@@ -1,32 +1,45 @@
-Z2Z Librus v0.3.12 – przypomnienia z terminarza (Szczegóły wpisu)
+Z2Z Librus v0.4.0 - odpowiadanie na wiadomości z Home Assistanta
 
-Problem:
-Wpisy typu „Przypomnienie” z terminarza Librusa (np. WF, lekcja 2:
-„Wyjazd na pływalnię, ul. Gładka 18 (strój kąpielowy, ręcznik, klapki,
-okulary, czepek)”) nie miały pełnych danych albo mogły zostać odfiltrowane
-jako szum, gdy w ich widocznym tekście było „Nauczyciel:”.
+Nowe (domyślnie WYŁĄCZONE - wysyła prawdziwe wiadomości do nauczycieli):
+Ustawienia -> Urządzenia i usługi -> Z2Z Librus -> Konfiguruj -> zaznacz
+"Włącz odpowiadanie na wiadomości i wysyłanie wiadomości". Integracja
+przeładuje się sama.
 
-Poprawka:
-- dla wpisów terminarza integracja pobiera stronę „Szczegóły” z Librusa
-  (Data, Nr lekcji, Nauczyciel, Rodzaj, Przedmiot, Opis),
-- przypomnienie pojawia się w kalendarzu „Wydarzenia szkolne” jako
-  „Przypomnienie – Wychowanie fizyczne”, na godzinach właściwej lekcji
-  (numer lekcji ze Szczegółów), a w opisie jest pełna treść z pola „Opis”,
-- opis z pola „Opis” (Szczegóły) jest używany także dla pozostałych
-  wydarzeń, jeśli jest dostępny,
-- wpisy oznaczone przez Librus jako „Przypomnienie” nigdy nie są
-  odfiltrowywane; gdy jedynym powodem podejrzenia szumu jest fraza
-  „Nauczyciel:”, o zachowaniu wpisu decyduje pole „Rodzaj” ze Szczegółów,
-- strony Szczegółów są zapamiętywane na 6 godzin (nieudane pobranie na
-  30 minut), a przy jednym odświeżeniu pobieranych jest najwyżej 25 nowych
-  stron – nie obciąża to Librusa; najpierw pobierane są wpisy przyszłe,
-- błąd pobrania Szczegółów nie psuje kalendarza – wpis pokazuje się tak jak
-  dotychczas,
-- kartkówki, klasówki, odwołane lekcje i wywiadówki działają bez zmian.
+Po włączeniu na urządzeniu "Librus - <uczeń>" pojawią się:
+- select "Odbiorca wiadomości": "↩ Odpowiedz: nadawca - temat" (5 ostatnich
+  wiadomości) lub "✉ imię i nazwisko" (dowolna osoba z listy odbiorców Librusa);
+  na starcie wybrana jest pusta opcja "— wybierz odbiorcę —",
+- text "Temat wiadomości" (przy odpowiedzi puste = "RE: temat"),
+- text "Treść wiadomości" (max 255 znaków - limit stanu HA),
+- button "Wyślij wiadomość",
+- sensor "Status wysyłki" (brak / wysyłanie / wysłano / błąd / niepewne
+  + atrybuty: adresat, temat, odpowiedź Librusa, zweryfikowane).
 
-Zmienione pliki:
-custom_components/z2z_librus/api.py
-custom_components/z2z_librus/calendar.py
-custom_components/z2z_librus/manifest.json
+Usługi (dłuższe teksty i automatyzacje, zwracają status):
+- z2z_librus.reply_message  (content, opcjonalnie message_id, title),
+- z2z_librus.send_message   (recipient, title, content).
+
+Zabezpieczenia:
+- adresat odpowiedzi = nadawca dopasowany po nazwisku do listy odbiorców
+  Librusa; gdy dopasowanie nie jest jednoznaczne - NIC nie jest wysyłane,
+- ta sama wiadomość nie jest wysyłana dwa razy w ciągu 2 min, odstęp
+  między wysyłkami min. 10 s,
+- POST wysyłki nigdy nie jest ponawiany automatycznie,
+- wynik jest oceniany po odpowiedzi Librusa (a nie po fladze z librus-apix,
+  która zawsze mówi "błąd"); gdy odpowiedź jest niejasna, integracja sprawdza
+  folder Wysłane i w razie braku pewności pokazuje status "niepewne",
+- treść wiadomości nie trafia do logów.
+
+Pierwszy test (na żywo): włącz opcję, wybierz "↩ Odpowiedz: ..." przy
+wiadomości od wychowawcy, wpisz krótką treść, naciśnij "Wyślij wiadomość"
+i sprawdź w Librusie folder Wysłane. Wyślij komuś, kto się nie zdziwi.
+Jeśli status pokaże "niepewne" lub "błąd" - wklej mi atrybuty sensora
+"Status wysyłki" (pole "message"), dostroję rozpoznawanie odpowiedzi.
+
+Zmienione/nowe pliki:
+custom_components/z2z_librus/api.py, reply.py, reply_base.py, select.py,
+text.py, button.py, sensor.py, coordinator.py, __init__.py, config_flow.py,
+const.py, services.yaml, strings.json, translations/pl.json, manifest.json,
+README.md
 
 Po aktualizacji zrestartuj Home Assistant.

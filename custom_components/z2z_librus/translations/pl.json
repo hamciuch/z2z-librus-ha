@@ -22,15 +22,62 @@
   "options": {
     "step": {
       "init": {
-        "title": "Ustawienia planu",
-        "description": "Ustaw osobną godzinę obiadu dla każdego dnia tygodnia. Każdy obiad trwa 15 minut.",
+        "title": "Ustawienia Z2Z Librus",
+        "description": "Odpowiadanie na wiadomości wysyła prawdziwe wiadomości do nauczycieli - domyślnie jest wyłączone. Poniżej ustaw też osobną godzinę obiadu dla każdego dnia tygodnia (obiad trwa 15 minut).",
         "data": {
+          "replies_enabled": "Włącz odpowiadanie na wiadomości i wysyłanie wiadomości (encje + usługi)",
           "lunch_enabled": "Pokazuj obiad w planie",
           "lunch_time_monday": "Poniedziałek – godzina obiadu",
           "lunch_time_tuesday": "Wtorek – godzina obiadu",
           "lunch_time_wednesday": "Środa – godzina obiadu",
           "lunch_time_thursday": "Czwartek – godzina obiadu",
           "lunch_time_friday": "Piątek – godzina obiadu"
+        }
+      }
+    }
+  },
+  "services": {
+    "reply_message": {
+      "name": "Odpowiedz na wiadomość",
+      "description": "Wysyła odpowiedź do nadawcy wiadomości z Librusa (temat domyślnie „RE: …”). Wymaga włączenia odpowiadania w ustawieniach integracji.",
+      "fields": {
+        "message_id": {
+          "name": "Identyfikator wiadomości",
+          "description": "Atrybut message_id z sensora „Wiadomość 1/2/3”. Puste = najnowsza wiadomość."
+        },
+        "content": {
+          "name": "Treść",
+          "description": "Treść odpowiedzi."
+        },
+        "title": {
+          "name": "Temat",
+          "description": "Puste = „RE: temat wiadomości”."
+        },
+        "config_entry": {
+          "name": "Konto Librus",
+          "description": "Potrzebne tylko przy więcej niż jednym koncie."
+        }
+      }
+    },
+    "send_message": {
+      "name": "Wyślij wiadomość",
+      "description": "Wysyła nową wiadomość do wskazanej osoby z listy odbiorców Librusa (po imieniu i nazwisku). Wymaga włączenia odpowiadania w ustawieniach integracji.",
+      "fields": {
+        "recipient": {
+          "name": "Odbiorca",
+          "description": "Imię i nazwisko osoby z listy odbiorców Librusa, np. „Jan Nowak”."
+        },
+        "title": {
+          "name": "Temat",
+          "description": "Temat wiadomości."
+        },
+        "content": {
+          "name": "Treść",
+          "description": "Treść wiadomości."
+        },
+        "config_entry": {
+          "name": "Konto Librus",
+          "description": "Potrzebne tylko przy więcej niż jednym koncie."
         }
       }
     }
