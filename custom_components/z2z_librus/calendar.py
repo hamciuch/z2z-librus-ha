@@ -61,6 +61,21 @@ def _lesson_title(subject, number) -> str:
         return subject
 
 
+# School events with an explicit "Czas: HH:MM - HH:MM" shorter than this are
+# shown at that time (e.g. a parents' meeting); longer ones (trips) stay all-day.
+ALL_DAY_MIN_HOURS = 6
+# Length used when only a start time is given.
+DEFAULT_EVENT_MINUTES = 60
+
+
+def _sort_key(event):
+    """Sort key that can compare all-day (date) and timed (datetime) events."""
+    start = event.start
+    if isinstance(start, datetime):
+        return start if start.tzinfo else start.astimezone()
+    return datetime.combine(start, time.min).astimezone()
+
+
 def _strike(text: str) -> str:
     """Strike text through using U+0336 (works in any plain-text calendar UI)."""
     return "".join(f"{char}̶" for char in str(text))
@@ -173,6 +188,41 @@ class AgendaCalendar(BaseCalendar):
 
         return None
 
+    @staticmethod
+    def _explicit_times(event, tz):
+        """Start/end from an explicit 'Czas: HH:MM - HH:MM', or None.
+
+        None for tests (they follow the lesson), for missing/invalid times and
+        for events lasting ALL_DAY_MIN_HOURS or more (trips stay all-day).
+        """
+        if event.get("is_test"):
+            return None
+
+        time_from = event.get("time_from")
+        if not time_from:
+            return None
+
+        try:
+            dt_start = datetime.fromisoformat(
+                f"{event['date']}T{time_from}"
+            ).replace(tzinfo=tz)
+            time_to = event.get("time_to")
+            if time_to:
+                dt_end = datetime.fromisoformat(
+                    f"{event['date']}T{time_to}"
+                ).replace(tzinfo=tz)
+            else:
+                dt_end = dt_start + timedelta(minutes=DEFAULT_EVENT_MINUTES)
+        except Exception:
+            return None
+
+        if dt_end <= dt_start:
+            return None
+        if dt_end - dt_start >= timedelta(hours=ALL_DAY_MIN_HOURS):
+            return None
+
+        return dt_start, dt_end
+
     def _events(self, start, end):
         out = []
         tz = datetime.now().astimezone().tzinfo
@@ -187,6 +237,19 @@ class AgendaCalendar(BaseCalendar):
                 continue
 
             description = _test_description(x.get("data"))
+
+            explicit = self._explicit_times(x, tz)
+            if explicit:
+                out.append(
+                    CalendarEvent(
+                        summary=x.get("title") or x.get("kind") or "Wydarzenie szkolne",
+                        start=explicit[0],
+                        end=explicit[1],
+                        description=description,
+                    )
+                )
+                continue
+
             lesson_times = self._lesson_times_for_event(x)
 
             if lesson_times:
@@ -221,7 +284,7 @@ class AgendaCalendar(BaseCalendar):
                 )
             )
 
-        return sorted(out, key=lambda e: e.start)
+        return sorted(out, key=_sort_key)
 
 
 class TimetableCalendar(BaseCalendar):

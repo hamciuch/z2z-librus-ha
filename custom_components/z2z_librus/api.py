@@ -27,6 +27,23 @@ SCHEDULE_NOISE_KEYWORDS = (
     "na lekcji nr ",
 )
 
+# Entries that are never treated as noise, even if their text also contains a
+# noise keyword (e.g. a parents' meeting listing "Nauczyciel: ..."). Checked
+# against title, subject and the tooltip metadata (except the teacher name).
+PROTECTED_KEYWORDS = (
+    "zebranie",
+    "wywiadówk",
+    "wywiadowk",
+    "rodzic",
+    "konsultacj",
+)
+
+# "Czas: 17:00 - 18:00" (or just "Czas: 17:00") line in a schedule cell.
+EVENT_TIME_RE = re.compile(
+    r"czas\s*:\s*(\d{1,2}):(\d{2})(?:\s*[-–—]\s*(\d{1,2}):(\d{2}))?",
+    re.IGNORECASE,
+)
+
 # "Odwołane zajęcia" entries from the Librus schedule (terminarz), e.g.:
 #   Odwołane zajęcia
 #   Justyna Burzyńska na lekcji nr: 1 (Edukacja wczesnoszkolna)
@@ -314,6 +331,65 @@ class LibrusClient:
         return any(keyword in haystack for keyword in SCHEDULE_NOISE_KEYWORDS)
 
     @staticmethod
+    def _is_protected_event(event: Any) -> bool:
+        """True for events that must never be dropped as noise (e.g. wywiadówka)."""
+        parts = [
+            str(getattr(event, "title", "") or ""),
+            str(getattr(event, "subject", "") or ""),
+        ]
+        data = getattr(event, "data", None)
+        if isinstance(data, dict):
+            parts.extend(
+                str(value)
+                for key, value in data.items()
+                if str(key).strip().lower() not in ("nauczyciel", "data dodania")
+            )
+        haystack = " ".join(parts).lower()
+        return any(keyword in haystack for keyword in PROTECTED_KEYWORDS)
+
+    @staticmethod
+    def _parse_event_time(event: Any) -> tuple[str | None, str | None]:
+        """Read 'Czas: HH:MM - HH:MM' from a schedule entry -> ('HH:MM', 'HH:MM'|None)."""
+        parts = [
+            str(getattr(event, "subject", "") or ""),
+            str(getattr(event, "title", "") or ""),
+        ]
+        data = getattr(event, "data", None)
+        if isinstance(data, dict):
+            parts.extend(str(value) for value in data.values())
+
+        for text in parts:
+            match = EVENT_TIME_RE.search(text)
+            if match is None:
+                continue
+
+            hour, minute = int(match.group(1)), int(match.group(2))
+            if hour > 23 or minute > 59:
+                continue
+
+            time_to = None
+            if match.group(3):
+                end_hour, end_minute = int(match.group(3)), int(match.group(4))
+                if end_hour <= 23 and end_minute <= 59:
+                    time_to = f"{end_hour:02d}:{end_minute:02d}"
+
+            return f"{hour:02d}:{minute:02d}", time_to
+
+        return None, None
+
+    @staticmethod
+    def _pick_summary(title: str, subject: str) -> str:
+        """Title for a non-test event, skipping 'Czas:' / 'Nauczyciel:' lines."""
+        for text in (title, subject):
+            text = (text or "").strip()
+            if not text:
+                continue
+            if text.lower().startswith(("czas:", "nauczyciel:")):
+                continue
+            return text
+        return "Wydarzenie szkolne"
+
+    @staticmethod
     def _parse_cancellation(event: Any) -> dict[str, Any] | None:
         """Parse an 'Odwołane zajęcia ... na lekcji nr: N' schedule entry.
 
@@ -443,13 +519,20 @@ class LibrusClient:
                         cancellations.append(cancellation)
                         continue
 
-                    if self._is_schedule_noise(x):
+                    if not self._is_protected_event(x) and self._is_schedule_noise(x):
                         continue
 
                     is_test = self._is_test_event(x)
                     kind = self._test_kind(x) if is_test else "Wydarzenie"
                     subject = (x.subject or "").strip()
                     title = (x.title or "").strip()
+                    time_from, time_to = self._parse_event_time(x)
+
+                    number = x.number
+                    if time_from and not is_test:
+                        # librus-apix reads the hour of "Czas: 17:00" as a
+                        # lesson number (17); an explicit time wins.
+                        number = None
 
                     if is_test:
                         summary = kind
@@ -458,7 +541,7 @@ class LibrusClient:
                         elif title and "nauczyciel" not in title.lower():
                             summary = f"{kind} – {title}"
                     else:
-                        summary = title or subject or "Wydarzenie szkolne"
+                        summary = self._pick_summary(title, subject)
 
                     result.append(
                         {
@@ -470,7 +553,9 @@ class LibrusClient:
                             "subject": subject,
                             "data": x.data,
                             "day": x.day,
-                            "number": x.number,
+                            "number": number,
+                            "time_from": time_from,
+                            "time_to": time_to,
                             "hour": x.hour,
                             "href": x.href,
                         }
