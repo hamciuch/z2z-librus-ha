@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import date, datetime, timedelta
 from typing import Any, Callable
 
@@ -25,6 +26,20 @@ SCHEDULE_NOISE_KEYWORDS = (
     "na lekcji nr:",
     "na lekcji nr ",
 )
+
+# "Odwołane zajęcia" entries from the Librus schedule (terminarz), e.g.:
+#   Odwołane zajęcia
+#   Justyna Burzyńska na lekcji nr: 1 (Edukacja wczesnoszkolna)
+# They are not shown as school events; instead they mark the matching
+# timetable lessons as cancelled.
+CANCELLATION_KEYWORDS = ("odwołane zajęcia", "odwolane zajecia")
+CANCELLATION_TITLE_RE = re.compile(
+    r"(?:(?P<teacher>[^\n(]+?)\s+)?na\s+lekcji\s+nr:?\s*(?P<number>\d+)"
+    r"(?:\s*\((?P<subject>[^)]*)\))?",
+    re.IGNORECASE,
+)
+# Text Librus itself may put in the timetable cell of a cancelled lesson.
+TIMETABLE_CANCELLED_MARKERS = ("odwołan", "odwolan")
 
 
 class LibrusError(Exception):
@@ -299,6 +314,78 @@ class LibrusClient:
         return any(keyword in haystack for keyword in SCHEDULE_NOISE_KEYWORDS)
 
     @staticmethod
+    def _parse_cancellation(event: Any) -> dict[str, Any] | None:
+        """Parse an 'Odwołane zajęcia ... na lekcji nr: N' schedule entry.
+
+        Returns None when the entry is not a cancellation, or when it does not
+        name a lesson number (such entries keep the previous behaviour).
+        """
+        title = str(getattr(event, "title", "") or "").strip()
+        subject = str(getattr(event, "subject", "") or "").strip()
+        text = f"{subject}\n{title}"
+        lowered = text.lower()
+
+        if not any(keyword in lowered for keyword in CANCELLATION_KEYWORDS):
+            return None
+
+        # Drop the "Odwołane zajęcia" label so that what is left is
+        # "<teacher> na lekcji nr: N (<subject>)".
+        detail = text
+        for keyword in CANCELLATION_KEYWORDS:
+            detail = re.sub(re.escape(keyword), " ", detail, flags=re.IGNORECASE)
+        detail = re.sub(r"[ \t\xa0]+", " ", detail).strip()
+
+        match = CANCELLATION_TITLE_RE.search(detail)
+        if match is None:
+            # Fall back to the metadata parsed from the tooltip.
+            data = getattr(event, "data", None)
+            extra = " ".join(str(v) for v in data.values()) if isinstance(data, dict) else ""
+            match = CANCELLATION_TITLE_RE.search(extra)
+        if match is None:
+            return None
+
+        return {
+            "number": int(match.group("number")),
+            "teacher": (match.group("teacher") or "").strip(),
+            "subject": (match.group("subject") or "").strip(),
+            "text": "Odwołane zajęcia",
+        }
+
+    @staticmethod
+    def _mark_cancelled_lessons(
+        timetable: list[dict[str, Any]],
+        cancellations: list[dict[str, Any]],
+    ) -> None:
+        """Flag timetable lessons cancelled in the schedule (in place)."""
+        cancelled = {(c["date"], c["number"]): c for c in cancellations}
+
+        for lesson in timetable:
+            reason = None
+
+            try:
+                number = int(lesson.get("number"))
+            except (TypeError, ValueError):
+                number = None
+
+            if number is not None:
+                match = cancelled.get((str(lesson.get("date") or ""), number))
+                if match is not None:
+                    reason = match["text"]
+
+            # Librus may also label the lesson itself in the timetable cell.
+            if reason is None:
+                info = lesson.get("info")
+                if isinstance(info, dict) and any(
+                    marker in str(key).lower()
+                    for key in info
+                    for marker in TIMETABLE_CANCELLED_MARKERS
+                ):
+                    reason = "Odwołane"
+
+            lesson["cancelled"] = reason is not None
+            lesson["cancel_reason"] = reason
+
+    @staticmethod
     def _is_test_event(event: Any) -> bool:
         parts = [
             getattr(event, "title", ""),
@@ -323,8 +410,10 @@ class LibrusClient:
             return "Klasówka"
         return "Sprawdzian"
 
-    async def get_schedule(self) -> list[dict[str, Any]]:
-        """Return all meaningful school events from the Librus schedule."""
+    async def get_schedule(
+        self,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Return (school events, cancelled lessons) from the Librus schedule."""
         from librus_apix.schedule import get_schedule
 
         today = date.today()
@@ -334,6 +423,7 @@ class LibrusClient:
             months.add((d.year, d.month))
 
         result = []
+        cancellations = []
         for year, month in sorted(months):
             schedule = await self._optional(
                 f"schedule {year}-{month:02d}",
@@ -345,6 +435,14 @@ class LibrusClient:
             )
             for day_num, events in (schedule or {}).items():
                 for x in events or []:
+                    cancellation = self._parse_cancellation(x)
+                    if cancellation is not None:
+                        cancellation["date"] = (
+                            f"{year:04d}-{month:02d}-{int(day_num):02d}"
+                        )
+                        cancellations.append(cancellation)
+                        continue
+
                     if self._is_schedule_noise(x):
                         continue
 
@@ -379,12 +477,13 @@ class LibrusClient:
                     )
 
         result.sort(key=lambda x: (x["date"], str(x.get("hour") or ""), x["title"]))
-        return result
+        cancellations.sort(key=lambda c: (c["date"], c["number"]))
+        return result, cancellations
 
     async def fetch_core(self) -> dict[str, Any]:
         student = await self.get_student()
 
-        grades, homework, messages, attendance, timetable, school_events = await asyncio.gather(
+        grades, homework, messages, attendance, timetable, schedule = await asyncio.gather(
             self.get_grades(),
             self.get_homework(),
             self.get_messages(),
@@ -392,6 +491,10 @@ class LibrusClient:
             self.get_timetable(),
             self.get_schedule(),
         )
+        school_events, cancellations = schedule
+
+        # Mark lessons cancelled in the schedule ("Odwołane zajęcia").
+        self._mark_cancelled_lessons(timetable, cancellations)
 
         # Keep the existing "schedule" key test-only, but remove today's
         # tests immediately after their lesson has ended. The existing
@@ -461,4 +564,5 @@ class LibrusClient:
             "timetable": timetable,
             "schedule": tests,
             "school_events": school_events,
+            "cancelled_lessons": cancellations,
         }

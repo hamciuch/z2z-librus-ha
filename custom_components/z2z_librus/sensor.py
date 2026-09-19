@@ -298,6 +298,8 @@ class NextLessonEntity(Base):
         now = datetime.now()
         candidates = []
         for x in self.coordinator.data.get("timetable", []):
+            if x.get("cancelled"):
+                continue
             try:
                 start = datetime.fromisoformat(f"{x['date']}T{x['date_from']}")
             except Exception:

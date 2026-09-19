@@ -61,6 +61,11 @@ def _lesson_title(subject, number) -> str:
         return subject
 
 
+def _strike(text: str) -> str:
+    """Strike text through using U+0336 (works in any plain-text calendar UI)."""
+    return "".join(f"{char}̶" for char in str(text))
+
+
 def _test_description(details) -> str:
     """Extract only the scope/description of a test."""
     if isinstance(details, dict):
@@ -266,7 +271,14 @@ class TimetableCalendar(BaseCalendar):
 
         return out
 
-    def _events(self, start, end):
+    @property
+    def event(self):
+        """Current/next event; cancelled lessons never count as an event."""
+        now = datetime.now().astimezone()
+        events = self._events(now, now + timedelta(days=120), include_cancelled=False)
+        return events[0] if events else None
+
+    def _events(self, start, end, include_cancelled=True):
         out = []
         tz = datetime.now().astimezone().tzinfo
 
@@ -284,11 +296,20 @@ class TimetableCalendar(BaseCalendar):
             if not _in_range(dt_start, start, end):
                 continue
 
+            summary = _lesson_title(x.get("subject"), x.get("number"))
             description = _clean_teacher_room(x.get("teacher_and_classroom"))
+
+            if x.get("cancelled"):
+                if not include_cancelled:
+                    continue
+                # Cancelled lesson: strike the title through and say why.
+                summary = _strike(summary)
+                reason = x.get("cancel_reason") or "Odwołane"
+                description = f"{reason} · {description}" if description else reason
 
             out.append(
                 CalendarEvent(
-                    summary=_lesson_title(x.get("subject"), x.get("number")),
+                    summary=summary,
                     start=dt_start,
                     end=dt_end,
                     description=description,
