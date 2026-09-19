@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from datetime import date, datetime, timedelta
 from typing import Any, Callable
 
@@ -36,7 +37,19 @@ PROTECTED_KEYWORDS = (
     "wywiadowk",
     "rodzic",
     "konsultacj",
+    "przypomnie",
 )
+
+# "nauczyciel:" alone is a weak noise signal (many real events name the
+# teacher). When only this keyword matched, the event's detail page decides.
+WEAK_NOISE_KEYWORDS = ("nauczyciel:",)
+
+# Detail page ("Szczegóły") of a schedule entry: Data, Nr lekcji, Nauczyciel,
+# Rodzaj, Przedmiot, Opis, Data dodania. Cached because it rarely changes.
+DETAIL_TTL_SECONDS = 6 * 3600
+DETAIL_FAIL_TTL_SECONDS = 30 * 60
+DETAIL_MAX_FETCH = 25  # new detail pages fetched per refresh (spreads the load)
+REMINDER_MARKER = "przypomnie"  # Rodzaj: Przypomnienie
 
 # "Czas: 17:00 - 18:00" (or just "Czas: 17:00") line in a schedule cell.
 EVENT_TIME_RE = re.compile(
@@ -76,6 +89,8 @@ class LibrusClient:
         self._client = None
         self._token = None
         self._auth_lock = asyncio.Lock()
+        self._detail_cache: dict[str, tuple[float, dict[str, str]]] = {}
+        self._detail_budget = DETAIL_MAX_FETCH
 
     async def login(self) -> None:
         async with self._auth_lock:
@@ -390,6 +405,91 @@ class LibrusClient:
         return "Wydarzenie szkolne"
 
     @staticmethod
+    def _is_weak_noise(event: Any) -> bool:
+        """True when the noise filter matched only on a weak keyword ('nauczyciel:')."""
+        title = str(getattr(event, "title", "") or "").strip().lower()
+        subject = str(getattr(event, "subject", "") or "").strip().lower()
+        haystack = f"{title} {subject}"
+        return not any(
+            keyword in haystack
+            for keyword in SCHEDULE_NOISE_KEYWORDS
+            if keyword not in WEAK_NOISE_KEYWORDS
+        )
+
+    async def _detail_for(self, href: str) -> dict[str, str] | None:
+        """Detail page ('Szczegóły') of a schedule entry, cached; None if unavailable."""
+        if not href or "/" not in href:
+            return None
+
+        now = time.monotonic()
+        cached = self._detail_cache.get(href)
+        if cached and cached[0] > now:
+            return cached[1] or None
+
+        if self._detail_budget <= 0:
+            return None
+        self._detail_budget -= 1
+
+        from librus_apix.schedule import schedule_detail
+
+        prefix, suffix = href.split("/", 1)
+        detail = await self._optional(
+            f"schedule detail {href}",
+            schedule_detail,
+            prefix,
+            suffix,
+            default=None,
+        )
+
+        if isinstance(detail, dict) and detail:
+            clean = {str(k).strip(): str(v).strip() for k, v in detail.items()}
+            self._detail_cache[href] = (now + DETAIL_TTL_SECONDS, clean)
+            return clean
+
+        self._detail_cache[href] = (now + DETAIL_FAIL_TTL_SECONDS, {})
+        return None
+
+    @staticmethod
+    def _apply_detail(event: dict[str, Any], detail: dict[str, str]) -> None:
+        """Merge the detail page (Rodzaj, Przedmiot, Nr lekcji, Opis) into an event."""
+        kind = detail.get("Rodzaj", "")
+        subject = detail.get("Przedmiot", "")
+        lesson = detail.get("Nr lekcji", "")
+        description = "\n".join(
+            re.sub(r"[ \t\xa0]+", " ", line).strip()
+            for line in detail.get("Opis", "").splitlines()
+            if line.strip()
+        )
+
+        event["detail"] = {
+            key: detail[key]
+            for key in ("Rodzaj", "Przedmiot", "Nr lekcji", "Nauczyciel", "Opis")
+            if detail.get(key)
+        }
+        if description:
+            event["description"] = description
+
+        try:
+            event["number"] = int(lesson)
+        except (TypeError, ValueError):
+            pass
+
+        if REMINDER_MARKER in kind.lower():
+            event["kind"] = kind
+            event["title"] = f"{kind} – {subject}" if subject else kind
+
+    async def _enrich_events(self, events: list[dict[str, Any]]) -> None:
+        """Add detail-page data to non-test events (upcoming first)."""
+        today = date.today().isoformat()
+        candidates = [e for e in events if not e.get("is_test") and e.get("href")]
+        candidates.sort(key=lambda e: (e["date"] < today, e["date"]))
+
+        for event in candidates:
+            detail = await self._detail_for(event["href"])
+            if detail:
+                self._apply_detail(event, detail)
+
+    @staticmethod
     def _parse_cancellation(event: Any) -> dict[str, Any] | None:
         """Parse an 'Odwołane zajęcia ... na lekcji nr: N' schedule entry.
 
@@ -498,6 +598,15 @@ class LibrusClient:
             d = today + timedelta(days=offset)
             months.add((d.year, d.month))
 
+        # New refresh: drop expired detail pages and reset the request budget.
+        now_mono = time.monotonic()
+        self._detail_cache = {
+            href: entry
+            for href, entry in self._detail_cache.items()
+            if entry[0] > now_mono
+        }
+        self._detail_budget = DETAIL_MAX_FETCH
+
         result = []
         cancellations = []
         for year, month in sorted(months):
@@ -520,7 +629,17 @@ class LibrusClient:
                         continue
 
                     if not self._is_protected_event(x) and self._is_schedule_noise(x):
-                        continue
+                        if not self._is_weak_noise(x):
+                            continue
+
+                        # Only "nauczyciel:" matched. Keep the entry when
+                        # Librus itself classes it as a reminder (Przypomnienie).
+                        detail = await self._detail_for(getattr(x, "href", ""))
+                        if not (
+                            detail
+                            and REMINDER_MARKER in detail.get("Rodzaj", "").lower()
+                        ):
+                            continue
 
                     is_test = self._is_test_event(x)
                     kind = self._test_kind(x) if is_test else "Wydarzenie"
@@ -560,6 +679,8 @@ class LibrusClient:
                             "href": x.href,
                         }
                     )
+
+        await self._enrich_events(result)
 
         result.sort(key=lambda x: (x["date"], str(x.get("hour") or ""), x["title"]))
         cancellations.sort(key=lambda c: (c["date"], c["number"]))

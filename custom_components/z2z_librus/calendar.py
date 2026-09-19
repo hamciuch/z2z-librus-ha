@@ -236,7 +236,8 @@ class AgendaCalendar(BaseCalendar):
             if not _in_range(d, start, end):
                 continue
 
-            description = _test_description(x.get("data"))
+            # Description from the detail page ("Opis") wins over the tooltip's.
+            description = x.get("description") or _test_description(x.get("data"))
 
             explicit = self._explicit_times(x, tz)
             if explicit:
