@@ -11,7 +11,12 @@ from typing import Any, Callable
 from librus_apix.client import new_client
 from librus_apix.exceptions import AuthorizationError, TokenError
 
+from .const import GRADE_SYMBOLS
+
 _LOGGER = logging.getLogger(__name__)
+
+# Regular school grade 1-6 with an optional + / - (e.g. "5", "4+", "3-").
+GRADE_NUMERIC_RE = re.compile(r"^[1-6][+-]?$")
 
 TEST_KEYWORDS = ("kartkówka", "kartkowka", "klasówka", "klasowka")
 
@@ -265,18 +270,50 @@ class LibrusClient:
 
     @staticmethod
     def _grade_to_dict(grade: Any, grade_type: str, subject_fallback: str = "") -> dict[str, Any]:
+        value = str(getattr(grade, "grade", "") or "").strip()
+        symbol = value.casefold()
+        desc = str(getattr(grade, "desc", "") or "")
+        href = str(getattr(grade, "href", "") or "")
+
+        if GRADE_NUMERIC_RE.match(value):
+            kind = "grade"
+        elif symbol in ("+", "-"):
+            kind = "plus" if symbol == "+" else "minus"
+        elif value:
+            kind = "symbol"
+        else:
+            kind = "empty"
+
+        comment_match = re.search(r"Komentarz:\s*(.+)", desc, re.S)
+        id_match = re.search(r"/szczegoly/(\d+)", href)
+        weight = getattr(grade, "weight", None)
+        counts = getattr(grade, "counts", None)
+
         return {
             "subject_name": str(getattr(grade, "subject", "") or subject_fallback or ""),
-            "display_value": str(getattr(grade, "grade", "") or ""),
+            "display_value": value,
             "date": str(getattr(grade, "date", "") or ""),
             "category_name": str(
                 getattr(grade, "category", "")
-                or getattr(grade, "desc", "")
+                or desc
                 or ""
             ).split("\n")[0],
             "teacher": str(getattr(grade, "teacher", "") or ""),
             "semester": getattr(grade, "semester", None),
             "type": grade_type,
+            # 0.4.1: details librus-apix already parses but we used to drop.
+            "id": id_match.group(1) if id_match else None,
+            "kind": kind,
+            "label": GRADE_SYMBOLS.get(symbol) if kind != "grade" else None,
+            "weight": weight if isinstance(weight, int) and weight > 0 else None,
+            # librus-apix reports False also when Librus does not show
+            # "Licz do średniej" at all - treat that as unknown.
+            "counts": (
+                counts
+                if isinstance(counts, bool) and "Licz do średniej" in desc
+                else None
+            ),
+            "comment": comment_match.group(1).strip() if comment_match else None,
         }
 
     async def get_grades(self) -> list[dict[str, Any]]:

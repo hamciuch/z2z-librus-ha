@@ -9,7 +9,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from homeassistant.core import callback
 
-from .const import CONF_REPLIES_ENABLED, DEFAULT_REPLIES_ENABLED, DOMAIN
+from .const import CONF_REPLIES_ENABLED, DEFAULT_REPLIES_ENABLED, DOMAIN, GRADE_SYMBOLS
 
 
 def _me(data):
@@ -29,6 +29,31 @@ def _student_name(data):
 def _ident(data, fallback):
     m = _me(data)
     return str(m.get("AccountId") or m.get("Login") or fallback)
+
+
+def _grade_stats(grades):
+    """Counts of every non-numeric symbol (np, bz, +, -, ...), case-insensitive."""
+    symbols = Counter(
+        str(g.get("display_value") or "").strip().casefold()
+        for g in grades
+        if g.get("kind", "grade") != "grade" and g.get("display_value")
+    )
+    stats = {
+        "symbol_counts": dict(sorted(symbols.items())),
+        "symbol_labels": {
+            s: GRADE_SYMBOLS.get(s) for s in sorted(symbols)
+        },
+        "numeric_count": sum(1 for g in grades if g.get("kind") == "grade"),
+        # Backwards-compatible keys (<= 0.4.0).
+        "plus_count": symbols.get("+", 0),
+        "minus_count": symbols.get("-", 0),
+    }
+    # One flat <symbol>_count key per known symbol, e.g. np_count, bz_count.
+    for sym in GRADE_SYMBOLS:
+        if sym in ("+", "-"):
+            continue
+        stats[f"{sym}_count"] = symbols.get(sym, 0)
+    return stats
 
 
 def _all_subjects(data):
@@ -147,15 +172,11 @@ class GradesEntity(Base):
     def extra_state_attributes(self):
         grades = self.coordinator.data.get("grades", [])
         values = [g.get("display_value") for g in grades]
-        counts = Counter(values)
         return {
             "student": _student_name(self.coordinator.data),
             "grades": grades[-250:],
             "values": values,
-            "plus_count": counts.get("+", 0),
-            "minus_count": counts.get("-", 0),
-            "np_count": counts.get("np", 0),
-            "bz_count": counts.get("bz", 0),
+            **_grade_stats(grades),
         }
 
 
@@ -190,6 +211,7 @@ class SubjectGradesEntity(Base):
             "grade_count": len(rows),
             "grades": rows[-150:],
             "values": [g.get("display_value") for g in rows],
+            **_grade_stats(rows),
         }
 
 

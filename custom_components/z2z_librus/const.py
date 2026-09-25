@@ -18,3 +18,24 @@ LUNCH_DURATION_MINUTES = 15
 # Replying to / sending messages (creates real messages in Librus) - opt-in.
 CONF_REPLIES_ENABLED = "replies_enabled"
 DEFAULT_REPLIES_ENABLED = False
+
+# Non-numeric grade symbols used in Librus Synergia (legend on the grades
+# page). Schools can define their own, so unknown symbols are still kept
+# as-is and reported with label None.
+GRADE_SYMBOLS = {
+    "+": "plus",
+    "-": "minus",
+    "np": "nieprzygotowany",
+    "bz": "brak zadania",
+    "bk": "brak książki/zeszytu",
+    "nb": "nieobecny",
+    "nk": "nieklasyfikowany",
+    "uł": "uczestniczył",
+    "nł": "nie uczestniczył",
+    "zl": "zaliczył",
+    "nz": "nie zaliczył",
+    "zw": "zwolniony",
+    "uc": "uczęszczał",
+    "nu": "nie uczęszczał",
+    "0": "zero",
+}

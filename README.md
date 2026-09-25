@@ -24,6 +24,20 @@ LIBRUS nie publikuje dokumentacji tego API. Endpointy `Me`, `Grades`, `Grades/Ca
 ### Status 0.1.0
 Ta wersja jest przygotowana do testu na prawdziwym koncie. Najważniejszy pierwszy test to logowanie + `Me` + `Grades`. Po zebraniu zanonimizowanego DEBUG JSON można dopiąć bez zgadywania: terminarz, pełny plan lekcji, zastępstwa, dni wolne i wszystkie warianty ocen.
 
+## Oceny i symbole (od 0.4.1)
+Każda ocena w atrybucie `grades` ma (poza `display_value`, `date`, `category_name`, `teacher`, `semester`):
+- `kind`: `grade` (1–6 z +/-), `plus`, `minus`, `symbol` (np. `np`, `bz`), `empty`;
+- `label`: opis symbolu z legendy Librusa (np. `np` → `nieprzygotowany`), dla zwykłych ocen `null`;
+- `id`: numer oceny w Librusie (z linku do szczegółów), przydatny do wykrywania nowych wpisów;
+- `weight`, `counts` („Licz do średniej”), `comment`: gdy szkoła je udostępnia, inaczej `null`.
+
+Sensory „Wszystkie oceny” i „Oceny – przedmiot” mają dodatkowo:
+- `symbol_counts` (np. `{"+": 2, "np": 1}`) i `symbol_labels`, liczone bez względu na wielkość liter;
+- `numeric_count` (liczba zwykłych ocen);
+- płaskie liczniki `plus_count`, `minus_count`, `np_count`, `bz_count`, `bk_count`, `nb_count`, `nk_count`, `uł_count`, `nł_count`, `zl_count`, `nz_count`, `zw_count`, `uc_count`, `nu_count`, `0_count`.
+
+Nieznane symbole (własne w danej szkole) nie są gubione. Trafiają do `symbol_counts` z `label: null`.
+
 ## Odpowiadanie na wiadomości (od 0.4.0, domyślnie wyłączone)
 Wysyła **prawdziwe wiadomości** do nauczycieli, dlatego trzeba to włączyć świadomie:
 Ustawienia → Urządzenia i usługi → Z2Z Librus → Konfiguruj → „Włącz odpowiadanie na wiadomości”.
