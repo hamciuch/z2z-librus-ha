@@ -38,6 +38,18 @@ Sensory „Wszystkie oceny” i „Oceny – przedmiot” mają dodatkowo:
 
 Nieznane symbole (własne w danej szkole) nie są gubione. Trafiają do `symbol_counts` z `label: null`.
 
+## Powiadomienia o nowościach (od 0.5.0)
+Integracja odpala zdarzenia Home Assistanta **tylko dla naprawdę nowych** elementów:
+- `z2z_librus_new_grade`: dane zdarzenia to pola oceny (`subject_name`, `display_value`, `label`, `date`, `category_name`, `weight`, `comment`, …),
+- `z2z_librus_new_message`: `title`, `author`, `date`, `content` (treść dla 3 najnowszych), `href`,
+- `z2z_librus_new_test`: nowa kartkówka/klasówka w terminarzu (`title`, `date`, `subject`, `number`, `data`).
+
+Każde zdarzenie ma też `student` i `entry_id`, co pozwala rozróżnić dzieci. Lista już zgłoszonych elementów jest zapisywana w `.storage`, więc **restart HA nie wysyła starych powiadomień**. Pierwsze uruchomienie po instalacji lub aktualizacji tylko zapamiętuje stan i niczego nie zgłasza. Jeśli w jednym odświeżeniu pojawi się ponad 25 „nowych” elementów, integracja uznaje to za zmianę danych po stronie Librusa, a nie nowości, i nie spamuje.
+
+Gotowe automatyzacje są w [`examples/automations`](examples/automations). Nie wyzwalaj powiadomień zmianą stanu sensorów, bo każdy restart HA to „zmiana” z `unavailable`.
+
+Od 0.5.0 oceny w atrybucie `grades` są ułożone chronologicznie dla wszystkich przedmiotów (najnowsza na końcu). Najnowszą ocenę zawiera też atrybut `latest` sensora „Wszystkie oceny”.
+
 ## Odpowiadanie na wiadomości (od 0.4.0, domyślnie wyłączone)
 Wysyła **prawdziwe wiadomości** do nauczycieli, dlatego trzeba to włączyć świadomie:
 Ustawienia → Urządzenia i usługi → Z2Z Librus → Konfiguruj → „Włącz odpowiadanie na wiadomości”.

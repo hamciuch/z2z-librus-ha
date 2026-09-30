@@ -1,0 +1,35 @@
+alias: Librus Gabi - koniec lekcji
+description: Powiadomienie po ostatniej (nieodwołanej) lekcji dnia
+triggers:
+  - trigger: calendar
+    entity_id: calendar.dom_librus_gabriela_sobilo_plan_lekcji
+    event: end
+    offset: "00:00:00"
+conditions:
+  # Koniec obiadu ani odwołanej lekcji (tytuł przekreślony znakiem U+0336)
+  # nie jest końcem lekcji.
+  - condition: template
+    value_template: >-
+      {{ trigger.calendar_event.summary is not search('Obiad')
+         and trigger.calendar_event.summary is not search('̶') }}
+actions:
+  - action: calendar.get_events
+    target:
+      entity_id: calendar.dom_librus_gabriela_sobilo_plan_lekcji
+    data:
+      start_date_time: "{{ now().isoformat() }}"
+      end_date_time: "{{ today_at('23:59:59').isoformat() }}"
+    response_variable: remaining
+  - variables:
+      future_lessons: >-
+        {{ remaining['calendar.dom_librus_gabriela_sobilo_plan_lekcji'].events
+           | rejectattr('summary', 'search', 'Obiad')
+           | rejectattr('summary', 'search', '̶')
+           | list }}
+  - condition: template
+    value_template: "{{ future_lessons | count == 0 }}"
+  - action: notify.rodzice
+    data:
+      title: 🏫 Gabi skończyła lekcje
+      message: Dzisiejsze lekcje Gabi właśnie się skończyły.
+mode: single

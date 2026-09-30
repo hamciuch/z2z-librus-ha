@@ -1,0 +1,21 @@
+alias: Librus Gabi - nowa ocena
+description: Jedno powiadomienie na każdą nową ocenę (z2z_librus >= 0.5.0)
+triggers:
+  - trigger: event
+    event_type: z2z_librus_new_grade
+conditions:
+  - condition: template
+    value_template: "{{ 'gabriel' in (trigger.event.data.student | lower) }}"
+actions:
+  - action: notify.rodzice
+    data:
+      title: 🎓 Librus Gabi — nowa ocena
+      message: |-
+        {%- set g = trigger.event.data -%}
+        {{ g.subject_name }}: {{ g.display_value }}{{ ' (' ~ g.label ~ ')' if g.label else '' }}
+        📅 {{ g.date }}{{ ' · ' ~ g.category_name if g.category_name else '' }}{{ ' · waga ' ~ g.weight if g.weight else '' }}
+        {%- if g.comment %}
+        💬 {{ g.comment }}
+        {%- endif %}
+mode: queued
+max: 30

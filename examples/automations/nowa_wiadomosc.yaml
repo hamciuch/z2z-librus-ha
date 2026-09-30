@@ -1,0 +1,22 @@
+alias: Librus Gabi - nowa wiadomość
+description: Jedno powiadomienie na każdą nową wiadomość (z2z_librus >= 0.5.0)
+triggers:
+  - trigger: event
+    event_type: z2z_librus_new_message
+conditions:
+  - condition: template
+    value_template: "{{ 'gabriel' in (trigger.event.data.student | lower) }}"
+actions:
+  - action: notify.rodzice
+    data:
+      title: ✉️ Librus Gabi — nowa wiadomość
+      message: |-
+        {%- set m = trigger.event.data -%}
+        {{ m.title }}
+        Od: {{ m.author }}
+        {%- if m.content %}
+
+        {{ m.content }}
+        {%- endif %}
+mode: queued
+max: 30

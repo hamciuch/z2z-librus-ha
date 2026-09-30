@@ -332,7 +332,18 @@ class LibrusClient:
                 for grade in grades:
                     result.append(self._grade_to_dict(grade, "descriptive", subject))
 
+        # 0.5.0: chronological across all subjects (oldest first), so the
+        # newest grade is always grades[-1] - Librus returns them per subject.
+        result.sort(key=self._grade_sort_key)
         return result
+
+    @staticmethod
+    def _grade_sort_key(g: dict[str, Any]) -> tuple[str, int]:
+        try:
+            gid = int(g.get("id") or 0)
+        except (TypeError, ValueError):
+            gid = 0
+        return (str(g.get("date") or ""), gid)
 
     async def get_homework(self) -> list[dict[str, Any]]:
         from librus_apix.homework import get_homework

@@ -176,6 +176,8 @@ class GradesEntity(Base):
             "student": _student_name(self.coordinator.data),
             "grades": grades[-250:],
             "values": values,
+            # Newest grade (list is chronological since 0.5.0).
+            "latest": grades[-1] if grades else None,
             **_grade_stats(grades),
         }
 

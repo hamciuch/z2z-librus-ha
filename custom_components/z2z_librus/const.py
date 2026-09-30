@@ -1,6 +1,11 @@
 DOMAIN = "z2z_librus"
 PLATFORMS = ["sensor", "calendar", "select", "text", "button"]
 
+# Fired once per genuinely new item (0.5.0); see notifier.py.
+EVENT_NEW_GRADE = f"{DOMAIN}_new_grade"
+EVENT_NEW_MESSAGE = f"{DOMAIN}_new_message"
+EVENT_NEW_TEST = f"{DOMAIN}_new_test"
+
 CONF_SCAN_INTERVAL = "scan_interval"
 DEFAULT_SCAN_INTERVAL = 30
 

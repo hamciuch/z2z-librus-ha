@@ -16,6 +16,7 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
 )
+from .notifier import NewItemTracker
 from .reply import ReplyDraft
 
 _LOGGER = logging.getLogger(__name__)
@@ -35,6 +36,7 @@ class LibrusCoordinator(DataUpdateCoordinator):
         self.client = client
         self.draft = ReplyDraft()
         self.send_lock = asyncio.Lock()
+        self.tracker = NewItemTracker(hass, entry.entry_id)
 
     async def _fetch(self):
         data = await self.client.fetch_core()
@@ -47,6 +49,14 @@ class LibrusCoordinator(DataUpdateCoordinator):
         return data
 
     async def _async_update_data(self):
+        data = await self._fetch_with_relogin()
+        try:
+            await self.tracker.async_process(data)
+        except Exception:  # notifications are optional; never break the refresh
+            _LOGGER.exception("Unable to detect new Librus items")
+        return data
+
+    async def _fetch_with_relogin(self):
         try:
             return await self._fetch()
         except LibrusAuthError:

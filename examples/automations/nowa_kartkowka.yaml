@@ -1,0 +1,22 @@
+alias: Librus Gabi - nowa kartkówka
+description: Powiadomienie, gdy w terminarzu pojawi się nowa kartkówka / klasówka (z2z_librus >= 0.5.0)
+triggers:
+  - trigger: event
+    event_type: z2z_librus_new_test
+conditions:
+  - condition: template
+    value_template: "{{ 'gabriel' in (trigger.event.data.student | lower) }}"
+actions:
+  - action: notify.rodzice
+    data:
+      title: 📝 Librus Gabi — kartkówka / klasówka
+      message: |-
+        {%- set t = trigger.event.data -%}
+        {{ t.title }}
+        📅 {{ t.date }}{{ ', lekcja ' ~ t.number if t.number else '' }}{{ ' 📚 ' ~ t.subject if t.subject else '' }}
+        {%- set d = t.data %}
+        {%- if d is mapping and d.get('Opis') %}
+        {{ d.get('Opis') }}
+        {%- endif %}
+mode: queued
+max: 30

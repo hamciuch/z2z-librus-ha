@@ -7,6 +7,7 @@ from homeassistant.core import HomeAssistant
 from .api import LibrusClient
 from .const import DOMAIN, PLATFORMS
 from .coordinator import LibrusCoordinator
+from .notifier import async_remove_store
 from .reply import async_register_services, async_unregister_services
 
 
@@ -33,3 +34,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if not hass.data[DOMAIN]:
             async_unregister_services(hass)
     return ok
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Drop the list of already-announced items together with the entry."""
+    await async_remove_store(hass, entry.entry_id)
