@@ -246,7 +246,7 @@ def _fetch_notes_gateway_sync(client) -> list[dict[str, Any]]:
     category_types: dict[str, dict[str, Any]] = {}
     try:
         for c in _gateway_json(client, GATEWAY_NOTES + "/Categories").get("Categories") or []:
-            categories[str(c.get("Id"))] = _clean_text(c.get("Name"))
+            categories[str(c.get("Id"))] = _clean_text(c.get("Name") or c.get("CategoryName"))
             category_types[str(c.get("Id"))] = c
     except Exception as err:  # names are a nicety
         _LOGGER.debug("Notes categories unavailable: %s", err)
@@ -366,6 +366,84 @@ def _fetch_notes_html_sync(client) -> list[dict[str, Any]]:
                     },
                 }
             )
+    return result
+
+
+def _gateway_user_name(client, user_id: str, cache: dict[str, str]) -> str:
+    if not user_id:
+        return ""
+    if user_id not in cache:
+        try:
+            user = _gateway_json(client, f"/gateway/api/2.0/Users/{user_id}").get("User") or {}
+            cache[user_id] = _clean_text(
+                f"{user.get('FirstName', '')} {user.get('LastName', '')}"
+            )
+        except Exception:
+            cache[user_id] = ""
+    return cache[user_id]
+
+
+def _fetch_grades_gateway_sync(client, skip_subjects: set[str]) -> list[dict[str, Any]]:
+    """Regular grades of subjects the grades page parser missed (0.6.2).
+
+    librus-apix silently skips some rows of the grades page (seen with
+    "wychowanie fizyczne"). Only subjects completely absent from the page
+    result are taken from the API, so nothing can be listed twice.
+    """
+    client.refresh_oauth()
+    grades = _gateway_json(client, "/gateway/api/2.0/Grades").get("Grades") or []
+    subjects = {
+        str(x.get("Id")): _clean_text(x.get("Name"))
+        for x in _gateway_json(client, "/gateway/api/2.0/Subjects").get("Subjects") or []
+    }
+    categories: dict[str, dict[str, Any]] = {}
+    try:
+        for c in _gateway_json(client, "/gateway/api/2.0/Grades/Categories").get("Categories") or []:
+            categories[str(c.get("Id"))] = c
+    except Exception as err:
+        _LOGGER.debug("Grade categories unavailable: %s", err)
+
+    users: dict[str, str] = {}
+    result = []
+    for g in grades:
+        if any(g.get(f) for f in (
+            "IsSemester", "IsSemesterProposition", "IsFinal", "IsFinalProposition",
+        )):
+            continue  # only regular (bieżące) grades, like the page parser
+        subject = subjects.get(str((g.get("Subject") or {}).get("Id")), "")
+        if not subject or subject.casefold() in skip_subjects:
+            continue
+        value = _clean_text(g.get("Grade"))
+        symbol = value.casefold()
+        if GRADE_NUMERIC_RE.match(value):
+            kind = "grade"
+        elif symbol in ("+", "-"):
+            kind = "plus" if symbol == "+" else "minus"
+        else:
+            kind = "symbol" if value else "empty"
+        category = categories.get(str((g.get("Category") or {}).get("Id"))) or {}
+        weight = category.get("Weight")
+        counts = category.get("CountToTheAverage")
+        result.append(
+            {
+                "subject_name": subject,
+                "display_value": value,
+                "date": str(g.get("Date") or "")[:10],
+                "category_name": _clean_text(category.get("Name")),
+                "teacher": _gateway_user_name(
+                    client, str((g.get("AddedBy") or {}).get("Id") or ""), users
+                ),
+                "semester": g.get("Semester"),
+                "type": "numeric",
+                "id": str(g.get("Id") or "") or None,
+                "kind": kind,
+                "label": GRADE_SYMBOLS.get(symbol) if kind != "grade" else None,
+                "weight": weight if isinstance(weight, int) and weight > 0 else None,
+                "counts": counts if isinstance(counts, bool) else None,
+                "comment": None,
+                "source": "api",
+            }
+        )
     return result
 
 
@@ -513,6 +591,20 @@ class LibrusClient:
             for subject, grades in subject_group.items():
                 for grade in grades:
                     result.append(self._grade_to_dict(grade, "descriptive", subject))
+
+        # 0.6.2: add subjects the page parser dropped, straight from the API.
+        try:
+            await self._ensure_login()
+            known = {str(g.get("subject_name") or "").strip().casefold() for g in result}
+            extra = await asyncio.to_thread(_fetch_grades_gateway_sync, self._client, known)
+            if extra:
+                _LOGGER.debug(
+                    "Added %d grades from the API for subjects missing on the grades page: %s",
+                    len(extra), sorted({g["subject_name"] for g in extra}),
+                )
+            result.extend(extra)
+        except Exception as err:  # the page result is still valid on its own
+            _LOGGER.debug("Grades via gateway unavailable: %s", err)
 
         # 0.5.0: chronological across all subjects (oldest first), so the
         # newest grade is always grades[-1] - Librus returns them per subject.
