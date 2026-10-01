@@ -1,0 +1,25 @@
+# Karta "Uwagi" (z2z_librus >= 0.6.0). Wklej: Edytuj pulpit -> Dodaj kartę ->
+# Ręcznie (YAML). Zmień ID sensora w linii "set e = ..." na swoje.
+type: markdown
+title: 📝 Uwagi — Gabi
+content: |-
+  {%- set e = 'sensor.librus_gabriela_sobilo_uwagi' -%}
+  {%- set notes = state_attr(e, 'notes') or [] -%}
+  {%- set types = {
+      'pozytywna': ('success', '👍 Pochwała'),
+      'negatywna': ('warning', '⚠️ Uwaga negatywna'),
+  } -%}
+  **👍 {{ state_attr(e, 'positive_count') or 0 }}** pochwał ·
+  **⚠️ {{ state_attr(e, 'negative_count') or 0 }}** negatywnych
+  {%- if (state_attr(e, 'neutral_count') or 0) > 0 %} ·
+  **📌 {{ state_attr(e, 'neutral_count') }}** innych{% endif %}
+
+  {% for n in notes[:10] -%}
+  {%- set t = types.get(n.type, ('info', '📌 Uwaga')) -%}
+  <ha-alert alert-type="{{ t[0] }}" title="{{ t[1] }} · {{ n.date }}">
+  {%- set info = [n.category, n.teacher] | select | join(' · ') %}
+  {{ n.text | e }}{% if info %}<br><small>{{ info | e }}</small>{% endif %}
+  </ha-alert>
+  {% else -%}
+  Brak uwag 🎉
+  {%- endfor %}
