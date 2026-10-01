@@ -54,6 +54,7 @@ WEAK_NOISE_KEYWORDS = ("nauczyciel:",)
 # Rodzaj, Przedmiot, Opis, Data dodania. Cached because it rarely changes.
 DETAIL_TTL_SECONDS = 6 * 3600
 DETAIL_FAIL_TTL_SECONDS = 30 * 60
+FUTURE_WEEK_TTL_SECONDS = 2 * 3600
 DETAIL_MAX_FETCH = 25  # new detail pages fetched per refresh (spreads the load)
 REMINDER_MARKER = "przypomnie"  # Rodzaj: Przypomnienie
 
@@ -238,31 +239,40 @@ def _gateway_json(client, path: str) -> dict[str, Any]:
     return response.json()
 
 
-def _fetch_notes_gateway_sync(client) -> list[dict[str, Any]]:
-    client.refresh_oauth()
+# Dictionaries (subjects, categories, teachers) hardly ever change: keep them
+# for a few hours instead of asking Librus on every refresh (0.7.0).
+API_DICT_TTL_SECONDS = 6 * 3600
+ApiCache = dict[str, tuple[float, Any]]
+
+
+def _gateway_cached(client, path: str, cache: ApiCache | None) -> dict[str, Any]:
+    now = time.monotonic()
+    if cache is not None:
+        hit = cache.get(path)
+        if hit and hit[0] > now:
+            return hit[1]
+    data = _gateway_json(client, path)
+    if cache is not None:
+        cache[path] = (now + API_DICT_TTL_SECONDS, data)
+    return data
+
+
+def _fetch_notes_gateway_sync(client, cache: ApiCache | None = None) -> list[dict[str, Any]]:
+    """Notes from the API. The caller refreshes the OAuth token first."""
     notes = _gateway_json(client, GATEWAY_NOTES).get("Notes") or []
 
     categories: dict[str, str] = {}
     category_types: dict[str, dict[str, Any]] = {}
     try:
-        for c in _gateway_json(client, GATEWAY_NOTES + "/Categories").get("Categories") or []:
+        for c in _gateway_cached(client, GATEWAY_NOTES + "/Categories", cache).get("Categories") or []:
             categories[str(c.get("Id"))] = _clean_text(c.get("Name") or c.get("CategoryName"))
             category_types[str(c.get("Id"))] = c
     except Exception as err:  # names are a nicety
         _LOGGER.debug("Notes categories unavailable: %s", err)
 
-    teachers: dict[str, str] = {}
     result = []
     for n in notes:
         teacher_id = str((n.get("Teacher") or {}).get("Id") or "")
-        if teacher_id and teacher_id not in teachers:
-            try:
-                user = _gateway_json(client, f"/gateway/api/2.0/Users/{teacher_id}").get("User") or {}
-                teachers[teacher_id] = _clean_text(
-                    f"{user.get('FirstName', '')} {user.get('LastName', '')}"
-                )
-            except Exception:
-                teachers[teacher_id] = ""
         category_id = str((n.get("Category") or {}).get("Id"))
         category = categories.get(category_id, "")
         kind = (
@@ -277,7 +287,7 @@ def _fetch_notes_gateway_sync(client) -> list[dict[str, Any]]:
                 "added": str(n.get("AddDate") or ""),
                 "text": _clean_text(n.get("Text")),
                 "category": category,
-                "teacher": teachers.get(teacher_id, ""),
+                "teacher": _gateway_user_name(client, teacher_id, cache),
                 "type": kind,
                 "positive": kind == "pozytywna",
                 "negative": kind == "negatywna",
@@ -369,22 +379,18 @@ def _fetch_notes_html_sync(client) -> list[dict[str, Any]]:
     return result
 
 
-def _gateway_user_name(client, user_id: str, cache: dict[str, str]) -> str:
+def _gateway_user_name(client, user_id: str, cache: ApiCache | None) -> str:
     if not user_id:
         return ""
-    if user_id not in cache:
-        try:
-            user = _gateway_json(client, f"/gateway/api/2.0/Users/{user_id}").get("User") or {}
-            cache[user_id] = _clean_text(
-                f"{user.get('FirstName', '')} {user.get('LastName', '')}"
-            )
-        except Exception:
-            cache[user_id] = ""
-    return cache[user_id]
+    try:
+        user = _gateway_cached(client, f"/gateway/api/2.0/Users/{user_id}", cache).get("User") or {}
+    except Exception:
+        return ""
+    return _clean_text(f"{user.get('FirstName', '')} {user.get('LastName', '')}")
 
 
 def _fetch_grades_gateway_sync(
-    client, skip_subjects: set[str]
+    client, skip_subjects: set[str], cache: ApiCache | None = None
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Regular grades of subjects the grades page parser missed (0.6.2).
 
@@ -392,20 +398,19 @@ def _fetch_grades_gateway_sync(
     "wychowanie fizyczne"). Only subjects completely absent from the page
     result are taken from the API, so nothing can be listed twice.
     """
-    client.refresh_oauth()
     grades = _gateway_json(client, "/gateway/api/2.0/Grades").get("Grades") or []
     subjects = {
         str(x.get("Id")): _clean_text(x.get("Name"))
-        for x in _gateway_json(client, "/gateway/api/2.0/Subjects").get("Subjects") or []
+        for x in _gateway_cached(client, "/gateway/api/2.0/Subjects", cache).get("Subjects") or []
     }
     categories: dict[str, dict[str, Any]] = {}
     try:
-        for c in _gateway_json(client, "/gateway/api/2.0/Grades/Categories").get("Categories") or []:
+        for c in _gateway_cached(client, "/gateway/api/2.0/Grades/Categories", cache).get("Categories") or []:
             categories[str(c.get("Id"))] = c
     except Exception as err:
         _LOGGER.debug("Grade categories unavailable: %s", err)
 
-    users: dict[str, str] = {}
+    users = cache
     result = []
     per_subject: dict[str, dict[str, int]] = {}
     samples: list[dict[str, Any]] = []
@@ -470,7 +475,7 @@ def _fetch_grades_gateway_sync(
         )
         point_categories: dict[str, dict[str, Any]] = {}
         try:
-            data = _gateway_json(client, "/gateway/api/2.0/PointGrades/Categories")
+            data = _gateway_cached(client, "/gateway/api/2.0/PointGrades/Categories", cache)
             for c in next((v for v in data.values() if isinstance(v, list)), []):
                 point_categories[str(c.get("Id"))] = c
         except Exception as err:
@@ -531,21 +536,22 @@ def _fetch_grades_gateway_sync(
         "subjects": per_subject,
         "wf_samples": samples,
     }
-    # Other grade kinds Librus keeps outside /Grades (diagnostics only).
-    for name in ("TextGrades", "DescriptiveGrades", "PointGrades"):
-        try:
-            data = _gateway_json(client, f"/gateway/api/2.0/{name}")
-            rows = next((v for v in data.values() if isinstance(v, list)), [])
-            diag[name] = {
-                (subjects.get(str((r.get("Subject") or {}).get("Id")), "") or "?"): 0
-                for r in rows
-            }
-            for r in rows:
-                key = subjects.get(str((r.get("Subject") or {}).get("Id")), "") or "?"
-                diag[name][key] += 1
-        except Exception as err:
-            diag[name] = f"niedostępne: {str(err)[:80]}"
     return result, diag
+
+
+def _fetch_api_sync(client, skip_subjects: set[str], cache: ApiCache):
+    """All gateway-API data in one pass with a single OAuth refresh (0.7.0).
+
+    Returns (extra grades, grade diagnostics, notes or None when notes failed).
+    """
+    client.refresh_oauth()
+    grades, diag = _fetch_grades_gateway_sync(client, skip_subjects, cache)
+    try:
+        notes = _fetch_notes_gateway_sync(client, cache)
+    except Exception as err:
+        diag["notes_error"] = str(err)[:200]
+        notes = None
+    return grades, diag, notes
 
 
 class LibrusClient:
@@ -563,6 +569,9 @@ class LibrusClient:
         self.grades_api_info: dict[str, Any] = {}
         self._last_api_grades: list[dict[str, Any]] = []
         self._last_notes: list[dict[str, Any]] | None = None
+        self._api_cache: ApiCache = {}
+        self._message_cache: dict[str, dict[str, Any]] = {}
+        self._week_cache: dict[str, tuple[float, Any]] = {}
 
     async def login(self) -> None:
         async with self._auth_lock:
@@ -728,17 +737,24 @@ class LibrusClient:
                     await asyncio.sleep(2)
         raise last_err  # type: ignore[misc]
 
-    async def add_api_grades(self, page_grades: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Page grades + API grades of missing subjects + point grades."""
+    async def fetch_api_parts(
+        self, page_grades: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """(page grades + API grades, notes) from one API pass.
+
+        If the API fails even after a retry, the last good API grades and
+        notes are kept instead of vanishing; notes fall back to the /uwagi
+        page only when nothing was fetched before.
+        """
         known = {str(g.get("subject_name") or "").strip().casefold() for g in page_grades}
+        notes: list[dict[str, Any]] | None
         try:
-            extra, self.grades_api_info = await self._gateway(
-                _fetch_grades_gateway_sync, known
+            extra, self.grades_api_info, notes = await self._gateway(
+                _fetch_api_sync, known, self._api_cache
             )
             self._last_api_grades = extra
         except Exception as err:
-            # Keep the last good API grades instead of letting them vanish.
-            _LOGGER.warning("Librus API grades unavailable, keeping previous ones: %s", err)
+            _LOGGER.warning("Librus API unavailable, keeping previous data: %s", err)
             extra = [
                 g for g in self._last_api_grades
                 if g.get("kind") == "points"
@@ -748,25 +764,20 @@ class LibrusClient:
                 **(self.grades_api_info or {}),
                 "status": f"błąd (użyto poprzednich danych): {str(err)[:200]}",
             }
-        result = page_grades + extra
-        result.sort(key=self._grade_sort_key)
-        return result
+            notes = None
 
-    async def get_notes(self) -> list[dict[str, Any]]:
-        """Uwagi, oldest first. Gateway API first, then last good data, then /uwagi."""
-        try:
-            notes = await self._gateway(_fetch_notes_gateway_sync)
+        if notes is not None:
             self._last_notes = notes
-        except Exception as err:
-            if self._last_notes is not None:
-                _LOGGER.warning("Librus API notes unavailable, keeping previous ones: %s", err)
-                notes = self._last_notes
-            else:
-                _LOGGER.debug("Notes via gateway failed (%s), trying /uwagi page", err)
-                notes = await self._optional("notes", _fetch_notes_html_sync, default=[])
+        elif self._last_notes is not None:
+            notes = self._last_notes
+        else:
+            notes = await self._optional("notes", _fetch_notes_html_sync, default=[])
+
+        grades = page_grades + extra
+        grades.sort(key=self._grade_sort_key)
         notes = list(notes or [])
         notes.sort(key=lambda n: (n.get("date") or "", n.get("added") or "", n.get("id") or ""))
-        return notes
+        return grades, notes
 
     async def get_homework(self) -> list[dict[str, Any]]:
         from librus_apix.homework import get_homework
@@ -811,12 +822,19 @@ class LibrusClient:
             }
 
             if idx < 3 and x.href:
-                body = await self._optional(
-                    f"message content {x.href}",
-                    message_content,
-                    x.href,
-                    default=None,
-                )
+                # A message never changes: its content is fetched once (0.7.0).
+                body = self._message_cache.get(x.href)
+                if body is None:
+                    body = await self._optional(
+                        f"message content {x.href}",
+                        message_content,
+                        x.href,
+                        default=None,
+                    )
+                    if body is not None:
+                        self._message_cache[x.href] = body
+                        while len(self._message_cache) > 50:
+                            self._message_cache.pop(next(iter(self._message_cache)))
                 if body is not None:
                     item["content"] = getattr(body, "content", None)
                     item["author"] = getattr(body, "author", None) or item["author"]
@@ -963,13 +981,27 @@ class LibrusClient:
         ]
 
         result = []
-        for monday in mondays:
-            week = await self._optional(
-                f"timetable {monday.date()}",
-                get_timetable,
-                monday,
-                default=[],
-            )
+        now = time.monotonic()
+        for offset, monday in enumerate(mondays):
+            # Current week every refresh; later weeks at most every
+            # FUTURE_WEEK_TTL_SECONDS (0.7.0).
+            key = monday.date().isoformat()
+            cached = self._week_cache.get(key)
+            if offset > 0 and cached and cached[0] > now:
+                week = cached[1]
+            else:
+                week = await self._optional(
+                    f"timetable {monday.date()}",
+                    get_timetable,
+                    monday,
+                    default=None,
+                )
+                if week is not None:
+                    self._week_cache[key] = (now + FUTURE_WEEK_TTL_SECONDS, week)
+                elif cached:
+                    week = cached[1]  # keep the last good copy on an error
+            for old_key in [k for k in self._week_cache if k < mondays[0].date().isoformat()]:
+                self._week_cache.pop(old_key, None)
             for day_rows in week or []:
                 for x in day_rows or []:
                     if not x.subject:
@@ -1357,8 +1389,7 @@ class LibrusClient:
             self.get_schedule(),
         )
         # Gateway-API parts strictly one after another (see _gateway()).
-        grades = await self.add_api_grades(grades)
-        notes = await self.get_notes()
+        grades, notes = await self.fetch_api_parts(grades)
         school_events, cancellations = schedule
 
         # Mark lessons cancelled in the schedule ("Odwołane zajęcia").
