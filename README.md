@@ -55,6 +55,16 @@ Od 0.5.0 oceny w atrybucie `grades` są ułożone chronologicznie dla wszystkich
 ## Uwagi (od 0.6.0)
 Sensor **Uwagi**: stan to liczba uwag. Atrybuty: `positive_count`, `negative_count`, `neutral_count`, `latest`, `latest_negative` i `notes` (30 najnowszych, od najnowszej). Uwagi są pobierane z API Librusa (gateway), a gdy ono nie odpowiada, ze strony `/uwagi`. Pole `source` (`api` / `html`) mówi, skąd przyszły dane.
 
+## Ile zapytań do Librusa (od 0.8.0)
+Przy typowym odświeżeniu (co 30 min) integracja wysyła ok. 6–7 zapytań. Wcześniej było to 35–50. Co ile odświeżane są poszczególne dane:
+- **Przy każdym odświeżeniu:** oceny, oceny punktowe i uwagi z API Librusa (3 zapytania; token odnawiany tylko wtedy, gdy wygaśnie), lista wiadomości, plan bieżącego tygodnia, terminarz na najbliższe 2 tygodnie.
+- **Co godzinę:** dane ucznia (w tym szczęśliwy numerek), zadania domowe, frekwencja.
+- **Co 2 godziny:** kolejne tygodnie planu i dalsze miesiące terminarza.
+- **Co 6 godzin:** słowniki API (przedmioty, kategorie, nauczyciele) i strona ocen. Strona ocen tylko uzupełnia to, czego nie ma w API (np. oceny śródroczne). Gdy API nie działa, strona jest czytana od razu.
+- **Raz:** treść wiadomości i szczegóły wydarzeń z terminarza.
+
+Gdy któreś zapytanie się nie powiedzie, zostaje ostatnia poprawnie pobrana kopia danych.
+
 ## Odpowiadanie na wiadomości (od 0.4.0, domyślnie wyłączone)
 Wysyła **prawdziwe wiadomości** do nauczycieli, dlatego trzeba to włączyć świadomie:
 Ustawienia → Urządzenia i usługi → Z2Z Librus → Konfiguruj → „Włącz odpowiadanie na wiadomości”.

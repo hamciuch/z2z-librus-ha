@@ -14,6 +14,7 @@ from homeassistant.core import CoreState, Event, HomeAssistant, callback
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.storage import Store
 
+from .api import grade_content_key
 from .const import (
     DOMAIN,
     EVENT_NEW_GRADE,
@@ -25,6 +26,9 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 STORAGE_VERSION = 1
+# Bumped when a key format changes; those kinds get a silent new baseline.
+KEY_SCHEMA = 2
+SCHEMA_RESET_KINDS = {2: ("grades",)}
 # Seen keys kept per kind (a school year has a few hundred grades at most).
 MAX_KEYS = 3000
 # More "new" items than this in one refresh is not real news (e.g. Librus
@@ -40,9 +44,9 @@ def _join(item: dict[str, Any], *fields: str) -> str:
 
 
 def grade_key(g: dict[str, Any]) -> str:
-    if g.get("id"):
-        return f"id:{g['id']}"
-    return _join(g, "subject_name", "date", "display_value", "category_name", "type")
+    """Content-based (0.8.0): the same grade from the API or from the grades
+    page has the same key; repeats on one day get #1, #2, ..."""
+    return grade_content_key(g)
 
 
 def message_key(m: dict[str, Any]) -> str:
@@ -85,11 +89,17 @@ class NewItemTracker:
         self.entry_id = entry_id
         self._store = Store(hass, STORAGE_VERSION, storage_key(entry_id))
         self._seen: dict[str, list[str]] | None = None
+        self._schema_changed = False
 
     async def _load(self) -> None:
         stored = await self._store.async_load() or {}
         seen = stored.get("seen", {}) if isinstance(stored, dict) else {}
         self._seen = {k: list(v) for k, v in seen.items() if isinstance(v, list)}
+        schema = stored.get("schema", 1) if isinstance(stored, dict) else 1
+        for version in range(schema + 1, KEY_SCHEMA + 1):
+            for kind in SCHEMA_RESET_KINDS.get(version, ()):
+                self._seen.pop(kind, None)  # silent re-baseline below
+        self._schema_changed = schema != KEY_SCHEMA
 
     async def async_process(self, data: dict[str, Any]) -> None:
         if self._seen is None:
@@ -101,8 +111,12 @@ class NewItemTracker:
 
         for kind, (getter, key_fn, event_type, newest_first) in KINDS.items():
             current: dict[str, dict[str, Any]] = {}
+            repeats: dict[str, int] = {}
             for item in getter(data) or []:
-                current.setdefault(key_fn(item), item)
+                base = key_fn(item)
+                n = repeats.get(base, 0)
+                repeats[base] = n + 1
+                current[f"{base}#{n}" if n else base] = item
 
             known = self._seen.get(kind)
             if known is None:
@@ -134,8 +148,9 @@ class NewItemTracker:
                 new.reverse()  # announce oldest first
             to_fire.extend((event_type, item) for _, item in new)
 
-        if changed:
-            await self._store.async_save({"seen": self._seen})
+        if changed or self._schema_changed:
+            await self._store.async_save({"seen": self._seen, "schema": KEY_SCHEMA})
+            self._schema_changed = False
 
         if not to_fire:
             return
