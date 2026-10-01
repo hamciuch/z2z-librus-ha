@@ -519,7 +519,10 @@ def _fetch_grades_gateway_sync(
                 }
             )
     except Exception as err:
-        _LOGGER.debug("Point grades unavailable: %s", err)
+        status = getattr(getattr(err, "response", None), "status_code", None)
+        if status != 404:
+            raise  # retried by _gateway(); last good data is kept on failure
+        _LOGGER.debug("No point grades endpoint for this school: %s", err)
 
     diag: dict[str, Any] = {
         "status": "ok",
@@ -558,6 +561,8 @@ class LibrusClient:
         self._detail_budget = DETAIL_MAX_FETCH
         self._recipients_cache: tuple[float, list[dict[str, str]]] | None = None
         self.grades_api_info: dict[str, Any] = {}
+        self._last_api_grades: list[dict[str, Any]] = []
+        self._last_notes: list[dict[str, Any]] | None = None
 
     async def login(self) -> None:
         async with self._auth_lock:
@@ -691,23 +696,6 @@ class LibrusClient:
                 for grade in grades:
                     result.append(self._grade_to_dict(grade, "descriptive", subject))
 
-        # 0.6.2: add subjects the page parser dropped, straight from the API.
-        try:
-            await self._ensure_login()
-            known = {str(g.get("subject_name") or "").strip().casefold() for g in result}
-            extra, self.grades_api_info = await asyncio.to_thread(
-                _fetch_grades_gateway_sync, self._client, known
-            )
-            if extra:
-                _LOGGER.debug(
-                    "Added %d grades from the API for subjects missing on the grades page: %s",
-                    len(extra), sorted({g["subject_name"] for g in extra}),
-                )
-            result.extend(extra)
-        except Exception as err:  # the page result is still valid on its own
-            _LOGGER.debug("Grades via gateway unavailable: %s", err)
-            self.grades_api_info = {"status": f"błąd: {str(err)[:200]}"}
-
         # 0.5.0: chronological across all subjects (oldest first), so the
         # newest grade is always grades[-1] - Librus returns them per subject.
         result.sort(key=self._grade_sort_key)
@@ -721,17 +709,62 @@ class LibrusClient:
             gid = 0
         return (str(g.get("date") or ""), gid)
 
-    async def get_notes(self) -> list[dict[str, Any]]:
-        """Uwagi, oldest first. Gateway API first, the /uwagi page as fallback."""
-        # Not via _run(): a gateway/OAuth refusal must neither drop the
-        # Synergia session nor fail the whole refresh.
+    async def _gateway(self, func: Callable, *args):
+        """Run a gateway-API fetch with one retry (0.6.6).
+
+        Not via _run(): a gateway/OAuth refusal must neither drop the
+        Synergia session nor fail the whole refresh. Callers run these
+        one after another - parallel refresh_oauth() calls invalidate each
+        other's token, which made API data (e.g. WF point grades) flicker.
+        """
+        last_err: Exception | None = None
+        for attempt in range(2):
+            try:
+                await self._ensure_login()
+                return await asyncio.to_thread(func, self._client, *args)
+            except Exception as err:
+                last_err = err
+                if attempt == 0:
+                    await asyncio.sleep(2)
+        raise last_err  # type: ignore[misc]
+
+    async def add_api_grades(self, page_grades: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Page grades + API grades of missing subjects + point grades."""
+        known = {str(g.get("subject_name") or "").strip().casefold() for g in page_grades}
         try:
-            await self._ensure_login()
-            notes = await asyncio.to_thread(_fetch_notes_gateway_sync, self._client)
+            extra, self.grades_api_info = await self._gateway(
+                _fetch_grades_gateway_sync, known
+            )
+            self._last_api_grades = extra
         except Exception as err:
-            _LOGGER.debug("Notes via gateway failed (%s), trying /uwagi page", err)
-            notes = await self._optional("notes", _fetch_notes_html_sync, default=[])
-        notes = notes or []
+            # Keep the last good API grades instead of letting them vanish.
+            _LOGGER.warning("Librus API grades unavailable, keeping previous ones: %s", err)
+            extra = [
+                g for g in self._last_api_grades
+                if g.get("kind") == "points"
+                or str(g.get("subject_name") or "").casefold() not in known
+            ]
+            self.grades_api_info = {
+                **(self.grades_api_info or {}),
+                "status": f"błąd (użyto poprzednich danych): {str(err)[:200]}",
+            }
+        result = page_grades + extra
+        result.sort(key=self._grade_sort_key)
+        return result
+
+    async def get_notes(self) -> list[dict[str, Any]]:
+        """Uwagi, oldest first. Gateway API first, then last good data, then /uwagi."""
+        try:
+            notes = await self._gateway(_fetch_notes_gateway_sync)
+            self._last_notes = notes
+        except Exception as err:
+            if self._last_notes is not None:
+                _LOGGER.warning("Librus API notes unavailable, keeping previous ones: %s", err)
+                notes = self._last_notes
+            else:
+                _LOGGER.debug("Notes via gateway failed (%s), trying /uwagi page", err)
+                notes = await self._optional("notes", _fetch_notes_html_sync, default=[])
+        notes = list(notes or [])
         notes.sort(key=lambda n: (n.get("date") or "", n.get("added") or "", n.get("id") or ""))
         return notes
 
@@ -1315,15 +1348,17 @@ class LibrusClient:
     async def fetch_core(self) -> dict[str, Any]:
         student = await self.get_student()
 
-        grades, homework, messages, attendance, timetable, schedule, notes = await asyncio.gather(
+        grades, homework, messages, attendance, timetable, schedule = await asyncio.gather(
             self.get_grades(),
             self.get_homework(),
             self.get_messages(),
             self.get_attendance(),
             self.get_timetable(),
             self.get_schedule(),
-            self.get_notes(),
         )
+        # Gateway-API parts strictly one after another (see _gateway()).
+        grades = await self.add_api_grades(grades)
+        notes = await self.get_notes()
         school_events, cancellations = schedule
 
         # Mark lessons cancelled in the schedule ("Odwołane zajęcia").
