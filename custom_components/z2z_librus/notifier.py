@@ -12,7 +12,13 @@ from typing import Any, Callable
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
-from .const import DOMAIN, EVENT_NEW_GRADE, EVENT_NEW_MESSAGE, EVENT_NEW_TEST
+from .const import (
+    DOMAIN,
+    EVENT_NEW_GRADE,
+    EVENT_NEW_MESSAGE,
+    EVENT_NEW_NOTE,
+    EVENT_NEW_TEST,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -38,6 +44,12 @@ def message_key(m: dict[str, Any]) -> str:
     return str(m.get("href") or _join(m, "date", "author", "title"))
 
 
+def note_key(n: dict[str, Any]) -> str:
+    if n.get("id"):
+        return f"id:{n['id']}"
+    return _join(n, "date", "teacher", "text")
+
+
 def test_key(t: dict[str, Any]) -> str:
     return str(t.get("href") or _join(t, "date", "subject", "title"))
 
@@ -47,6 +59,7 @@ KINDS: dict[str, tuple[Callable[[dict], list], Callable[[dict], str], str, bool]
     "grades": (lambda d: d.get("grades", []), grade_key, EVENT_NEW_GRADE, False),
     "messages": (lambda d: d.get("messages", []), message_key, EVENT_NEW_MESSAGE, True),
     "tests": (lambda d: d.get("schedule", []), test_key, EVENT_NEW_TEST, False),
+    "notes": (lambda d: d.get("notes", []), note_key, EVENT_NEW_NOTE, False),
 }
 
 

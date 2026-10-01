@@ -187,6 +187,133 @@ def _parse_send_result(html: str) -> tuple[str, bool]:
     return (_clean_text(paragraph.get_text(" ")) if paragraph else ""), False
 
 
+# --- Uwagi (notes), 0.6.0 -------------------------------------------------
+# librus-apix has no notes module. The gateway API (same session as
+# attendance) gives structured data incl. positive/negative; the /uwagi page
+# is the fallback when the gateway is unavailable.
+NOTES_URL = "/uwagi"
+GATEWAY_NOTES = "/gateway/api/2.0/Notes"
+NOTE_TYPES = {1: "pozytywna", 0: "negatywna"}
+NOTE_TYPE_WORDS = (("pozytyw", "pozytywna"), ("negatyw", "negatywna"))
+
+
+def _note_type_from_text(*texts: str) -> str:
+    joined = " ".join(texts).casefold()
+    for word, kind in NOTE_TYPE_WORDS:
+        if word in joined:
+            return kind
+    return "neutralna"
+
+
+def _gateway_json(client, path: str) -> dict[str, Any]:
+    response = client.get(client.BASE_URL + path)
+    response.raise_for_status()
+    return response.json()
+
+
+def _fetch_notes_gateway_sync(client) -> list[dict[str, Any]]:
+    client.refresh_oauth()
+    notes = _gateway_json(client, GATEWAY_NOTES).get("Notes") or []
+
+    categories: dict[str, str] = {}
+    try:
+        for c in _gateway_json(client, GATEWAY_NOTES + "/Categories").get("Categories") or []:
+            categories[str(c.get("Id"))] = _clean_text(c.get("Name"))
+    except Exception as err:  # names are a nicety
+        _LOGGER.debug("Notes categories unavailable: %s", err)
+
+    teachers: dict[str, str] = {}
+    result = []
+    for n in notes:
+        teacher_id = str((n.get("Teacher") or {}).get("Id") or "")
+        if teacher_id and teacher_id not in teachers:
+            try:
+                user = _gateway_json(client, f"/gateway/api/2.0/Users/{teacher_id}").get("User") or {}
+                teachers[teacher_id] = _clean_text(
+                    f"{user.get('FirstName', '')} {user.get('LastName', '')}"
+                )
+            except Exception:
+                teachers[teacher_id] = ""
+        positive = n.get("Positive")
+        try:
+            kind = NOTE_TYPES.get(int(positive), "neutralna")
+        except (TypeError, ValueError):
+            kind = "neutralna"
+        category = categories.get(str((n.get("Category") or {}).get("Id")), "")
+        result.append(
+            {
+                "id": str(n.get("Id") or "") or None,
+                "date": str(n.get("Date") or "")[:10],
+                "added": str(n.get("AddDate") or ""),
+                "text": _clean_text(n.get("Text")),
+                "category": category,
+                "teacher": teachers.get(teacher_id, ""),
+                "type": kind,
+                "positive": kind == "pozytywna",
+                "negative": kind == "negatywna",
+                "source": "api",
+            }
+        )
+    return result
+
+
+def _fetch_notes_html_sync(client) -> list[dict[str, Any]]:
+    """Parse the /uwagi page; columns are matched by their header text."""
+    from bs4 import BeautifulSoup
+    from librus_apix.helpers import no_access_check
+
+    soup = no_access_check(
+        BeautifulSoup(client.get(client.BASE_URL + NOTES_URL).text, "lxml")
+    )
+    fields = (
+        ("treść", "text"), ("tresc", "text"), ("kategoria", "category"),
+        ("data", "date"), ("nauczyciel", "teacher"), ("dodał", "teacher"),
+        ("typ", "kind"), ("rodzaj", "kind"),
+    )
+    result = []
+    for table in soup.select("table"):
+        header = table.select_one("thead tr") or table.select_one("tr")
+        if header is None:
+            continue
+        columns: dict[int, str] = {}
+        for idx, cell in enumerate(header.find_all(["th", "td"])):
+            label = _clean_text(cell.get_text(" ")).casefold()
+            for word, field in fields:
+                if label.startswith(word) and field not in columns.values():
+                    columns[idx] = field
+                    break
+        if "text" not in columns.values():
+            continue
+        body_rows = table.select("tbody tr") or table.find_all("tr")[1:]
+        for row in body_rows:
+            cells = row.find_all("td")
+            if len(cells) < 2:
+                continue
+            item = {f: _clean_text(cells[i].get_text(" ")) for i, f in columns.items() if i < len(cells)}
+            if not item.get("text"):
+                continue
+            kind = _note_type_from_text(
+                item.get("kind", ""), item.get("category", ""),
+                " ".join(row.get("class", [])), _clean_text(row.get("title", "")),
+            )
+            date_match = re.search(r"\d{4}-\d{2}-\d{2}", item.get("date", ""))
+            result.append(
+                {
+                    "id": None,
+                    "date": date_match.group(0) if date_match else item.get("date", ""),
+                    "added": item.get("date", ""),
+                    "text": item["text"],
+                    "category": item.get("category", ""),
+                    "teacher": item.get("teacher", ""),
+                    "type": kind,
+                    "positive": kind == "pozytywna",
+                    "negative": kind == "negatywna",
+                    "source": "html",
+                }
+            )
+    return result
+
+
 class LibrusClient:
     """Async wrapper around librus-apix."""
 
@@ -344,6 +471,20 @@ class LibrusClient:
         except (TypeError, ValueError):
             gid = 0
         return (str(g.get("date") or ""), gid)
+
+    async def get_notes(self) -> list[dict[str, Any]]:
+        """Uwagi, oldest first. Gateway API first, the /uwagi page as fallback."""
+        # Not via _run(): a gateway/OAuth refusal must neither drop the
+        # Synergia session nor fail the whole refresh.
+        try:
+            await self._ensure_login()
+            notes = await asyncio.to_thread(_fetch_notes_gateway_sync, self._client)
+        except Exception as err:
+            _LOGGER.debug("Notes via gateway failed (%s), trying /uwagi page", err)
+            notes = await self._optional("notes", _fetch_notes_html_sync, default=[])
+        notes = notes or []
+        notes.sort(key=lambda n: (n.get("date") or "", n.get("added") or "", n.get("id") or ""))
+        return notes
 
     async def get_homework(self) -> list[dict[str, Any]]:
         from librus_apix.homework import get_homework
@@ -925,13 +1066,14 @@ class LibrusClient:
     async def fetch_core(self) -> dict[str, Any]:
         student = await self.get_student()
 
-        grades, homework, messages, attendance, timetable, schedule = await asyncio.gather(
+        grades, homework, messages, attendance, timetable, schedule, notes = await asyncio.gather(
             self.get_grades(),
             self.get_homework(),
             self.get_messages(),
             self.get_attendance(),
             self.get_timetable(),
             self.get_schedule(),
+            self.get_notes(),
         )
         school_events, cancellations = schedule
 
@@ -1007,4 +1149,5 @@ class LibrusClient:
             "schedule": tests,
             "school_events": school_events,
             "cancelled_lessons": cancellations,
+            "notes": notes,
         }

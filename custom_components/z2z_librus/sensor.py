@@ -82,6 +82,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         AttendanceEntity(c, entry),
         HomeworkEntity(c, entry),
         MessagesEntity(c, entry),
+        NotesEntity(c, entry),
         RecentMessageEntity(c, entry, 0),
         RecentMessageEntity(c, entry, 1),
         RecentMessageEntity(c, entry, 2),
@@ -277,6 +278,36 @@ class MessagesEntity(Base):
             "latest_title": messages[0].get("title") if messages else None,
             # Only expose the newest three to keep state attributes compact.
             "messages": messages[:3],
+        }
+
+
+class NotesEntity(Base):
+    """Uwagi (0.6.0): state = count, newest first in attributes."""
+
+    _attr_name = "Uwagi"
+    _attr_icon = "mdi:note-alert-outline"
+
+    @property
+    def unique_id(self):
+        return f"{_ident(self.coordinator.data, self.entry.entry_id)}_notes"
+
+    @property
+    def native_value(self):
+        return len(self.coordinator.data.get("notes", []))
+
+    @property
+    def extra_state_attributes(self):
+        notes = self.coordinator.data.get("notes", [])
+        newest_first = list(reversed(notes))
+        return {
+            "positive_count": sum(1 for n in notes if n.get("type") == "pozytywna"),
+            "negative_count": sum(1 for n in notes if n.get("type") == "negatywna"),
+            "neutral_count": sum(1 for n in notes if n.get("type") == "neutralna"),
+            "latest": newest_first[0] if newest_first else None,
+            "latest_negative": next(
+                (n for n in newest_first if n.get("type") == "negatywna"), None
+            ),
+            "notes": newest_first[:30],
         }
 
 

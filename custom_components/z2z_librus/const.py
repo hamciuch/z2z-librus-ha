@@ -5,6 +5,7 @@ PLATFORMS = ["sensor", "calendar", "select", "text", "button"]
 EVENT_NEW_GRADE = f"{DOMAIN}_new_grade"
 EVENT_NEW_MESSAGE = f"{DOMAIN}_new_message"
 EVENT_NEW_TEST = f"{DOMAIN}_new_test"
+EVENT_NEW_NOTE = f"{DOMAIN}_new_note"
 
 CONF_SCAN_INTERVAL = "scan_interval"
 DEFAULT_SCAN_INTERVAL = 30

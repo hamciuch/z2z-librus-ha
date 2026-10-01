@@ -44,11 +44,16 @@ Integracja odpala zdarzenia Home Assistanta **tylko dla naprawdę nowych** eleme
 - `z2z_librus_new_message`: `title`, `author`, `date`, `content` (treść dla 3 najnowszych), `href`,
 - `z2z_librus_new_test`: nowa kartkówka/klasówka w terminarzu (`title`, `date`, `subject`, `number`, `data`).
 
+- `z2z_librus_new_note` (od 0.6.0): nowa uwaga, z polami `text`, `date`, `category`, `teacher`, `type` (`pozytywna` / `negatywna` / `neutralna`), `positive`, `negative`.
+
 Każde zdarzenie ma też `student` i `entry_id`, co pozwala rozróżnić dzieci. Lista już zgłoszonych elementów jest zapisywana w `.storage`, więc **restart HA nie wysyła starych powiadomień**. Pierwsze uruchomienie po instalacji lub aktualizacji tylko zapamiętuje stan i niczego nie zgłasza. Jeśli w jednym odświeżeniu pojawi się ponad 25 „nowych” elementów, integracja uznaje to za zmianę danych po stronie Librusa, a nie nowości, i nie spamuje.
 
 Gotowe automatyzacje są w [`examples/automations`](examples/automations). Nie wyzwalaj powiadomień zmianą stanu sensorów, bo każdy restart HA to „zmiana” z `unavailable`.
 
 Od 0.5.0 oceny w atrybucie `grades` są ułożone chronologicznie dla wszystkich przedmiotów (najnowsza na końcu). Najnowszą ocenę zawiera też atrybut `latest` sensora „Wszystkie oceny”.
+
+## Uwagi (od 0.6.0)
+Sensor **Uwagi**: stan to liczba uwag. Atrybuty: `positive_count`, `negative_count`, `neutral_count`, `latest`, `latest_negative` i `notes` (30 najnowszych, od najnowszej). Uwagi są pobierane z API Librusa (gateway), a gdy ono nie odpowiada, ze strony `/uwagi`. Pole `source` (`api` / `html`) mówi, skąd przyszły dane.
 
 ## Odpowiadanie na wiadomości (od 0.4.0, domyślnie wyłączone)
 Wysyła **prawdziwe wiadomości** do nauczycieli, dlatego trzeba to włączyć świadomie:

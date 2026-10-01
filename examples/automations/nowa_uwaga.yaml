@@ -1,0 +1,22 @@
+alias: Librus Gabi - nowa uwaga
+description: Powiadomienie o nowej uwadze, inny nagłówek dla pozytywnej i negatywnej (z2z_librus >= 0.6.0)
+triggers:
+  - trigger: event
+    event_type: z2z_librus_new_note
+conditions:
+  - condition: template
+    value_template: "{{ 'gabriel' in (trigger.event.data.student | lower) }}"
+actions:
+  - variables:
+      n: "{{ trigger.event.data }}"
+      header: >-
+        {{ {'pozytywna': '👍 Librus Gabi — pochwała',
+            'negatywna': '⚠️ Librus Gabi — uwaga negatywna'}.get(n.type, '📌 Librus Gabi — nowa uwaga') }}
+  - action: notify.rodzice
+    data:
+      title: "{{ header }}"
+      message: |-
+        {{ n.text }}
+        📅 {{ n.date }}{{ ' · ' ~ n.category if n.category else '' }}{{ ' · ' ~ n.teacher if n.teacher else '' }}
+mode: queued
+max: 30
