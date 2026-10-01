@@ -458,8 +458,72 @@ def _fetch_grades_gateway_sync(
             }
         )
 
+    # Point grades (oceny punktowe, e.g. WF in some schools) live outside
+    # /Grades and on a separate table of the grades page that librus-apix
+    # does not read - always take them from the API (0.6.4).
+    point_samples: list[dict[str, Any]] = []
+    try:
+        points = next(
+            (v for v in _gateway_json(client, "/gateway/api/2.0/PointGrades").values()
+             if isinstance(v, list)),
+            [],
+        )
+        point_categories: dict[str, dict[str, Any]] = {}
+        try:
+            data = _gateway_json(client, "/gateway/api/2.0/PointGrades/Categories")
+            for c in next((v for v in data.values() if isinstance(v, list)), []):
+                point_categories[str(c.get("Id"))] = c
+        except Exception as err:
+            _LOGGER.debug("Point grade categories unavailable: %s", err)
+        for g in points:
+            if len(point_samples) < 3:
+                point_samples.append(_raw(g))
+            subject = subjects.get(str((g.get("Subject") or {}).get("Id")), "")
+            if not subject:
+                continue
+            value = next(
+                (_clean_text(g.get(f)) for f in ("Grade", "GradeValue", "Value", "Points")
+                 if g.get(f) not in (None, "")),
+                "",
+            )
+            category = point_categories.get(str((g.get("Category") or {}).get("Id"))) or {}
+            max_points = next(
+                (category.get(f) for f in ("MaxPoints", "MaxPointsValue", "Max")
+                 if category.get(f) not in (None, "")),
+                None,
+            )
+            weight = category.get("Weight")
+            stats = per_subject.setdefault(subject, {
+                "api": 0, "semestral": 0, "on_page": 0, "added": 0,
+            })
+            stats["points"] = stats.get("points", 0) + 1
+            result.append(
+                {
+                    "subject_name": subject,
+                    "display_value": value,
+                    "date": str(g.get("Date") or "")[:10],
+                    "category_name": _clean_text(category.get("Name")),
+                    "teacher": _gateway_user_name(
+                        client, str((g.get("AddedBy") or {}).get("Id") or ""), users
+                    ),
+                    "semester": g.get("Semester"),
+                    "type": "points",
+                    "id": f"pt{g['Id']}" if g.get("Id") else None,
+                    "kind": "points",
+                    "label": "ocena punktowa",
+                    "max_points": max_points,
+                    "weight": weight if isinstance(weight, int) and weight > 0 else None,
+                    "counts": None,
+                    "comment": None,
+                    "source": "api",
+                }
+            )
+    except Exception as err:
+        _LOGGER.debug("Point grades unavailable: %s", err)
+
     diag: dict[str, Any] = {
         "status": "ok",
+        "point_samples": point_samples,
         "api_grades": len(grades),
         "subjects": per_subject,
         "wf_samples": samples,

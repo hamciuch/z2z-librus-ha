@@ -36,7 +36,7 @@ def _grade_stats(grades):
     symbols = Counter(
         str(g.get("display_value") or "").strip().casefold()
         for g in grades
-        if g.get("kind", "grade") != "grade" and g.get("display_value")
+        if g.get("kind", "grade") not in ("grade", "points") and g.get("display_value")
     )
     stats = {
         "symbol_counts": dict(sorted(symbols.items())),
@@ -44,6 +44,7 @@ def _grade_stats(grades):
             s: GRADE_SYMBOLS.get(s) for s in sorted(symbols)
         },
         "numeric_count": sum(1 for g in grades if g.get("kind") == "grade"),
+        "points_count": sum(1 for g in grades if g.get("kind") == "points"),
         # Backwards-compatible keys (<= 0.4.0).
         "plus_count": symbols.get("+", 0),
         "minus_count": symbols.get("-", 0),
