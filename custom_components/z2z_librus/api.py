@@ -383,7 +383,9 @@ def _gateway_user_name(client, user_id: str, cache: dict[str, str]) -> str:
     return cache[user_id]
 
 
-def _fetch_grades_gateway_sync(client, skip_subjects: set[str]) -> list[dict[str, Any]]:
+def _fetch_grades_gateway_sync(
+    client, skip_subjects: set[str]
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Regular grades of subjects the grades page parser missed (0.6.2).
 
     librus-apix silently skips some rows of the grades page (seen with
@@ -405,14 +407,25 @@ def _fetch_grades_gateway_sync(client, skip_subjects: set[str]) -> list[dict[str
 
     users: dict[str, str] = {}
     result = []
+    per_subject: dict[str, dict[str, int]] = {}
+    samples: list[dict[str, Any]] = []
     for g in grades:
+        subject = subjects.get(str((g.get("Subject") or {}).get("Id")), "")
+        stats = per_subject.setdefault(subject or f"?{(g.get('Subject') or {}).get('Id')}", {
+            "api": 0, "semestral": 0, "on_page": 0, "added": 0,
+        })
+        stats["api"] += 1
+        if "fiz" in subject.casefold() and len(samples) < 5:
+            samples.append(_raw(g))
         if any(g.get(f) for f in (
             "IsSemester", "IsSemesterProposition", "IsFinal", "IsFinalProposition",
         )):
+            stats["semestral"] += 1
             continue  # only regular (bieżące) grades, like the page parser
-        subject = subjects.get(str((g.get("Subject") or {}).get("Id")), "")
         if not subject or subject.casefold() in skip_subjects:
+            stats["on_page"] += 1
             continue
+        stats["added"] += 1
         value = _clean_text(g.get("Grade"))
         symbol = value.casefold()
         if GRADE_NUMERIC_RE.match(value):
@@ -444,7 +457,28 @@ def _fetch_grades_gateway_sync(client, skip_subjects: set[str]) -> list[dict[str
                 "source": "api",
             }
         )
-    return result
+
+    diag: dict[str, Any] = {
+        "status": "ok",
+        "api_grades": len(grades),
+        "subjects": per_subject,
+        "wf_samples": samples,
+    }
+    # Other grade kinds Librus keeps outside /Grades (diagnostics only).
+    for name in ("TextGrades", "DescriptiveGrades", "PointGrades"):
+        try:
+            data = _gateway_json(client, f"/gateway/api/2.0/{name}")
+            rows = next((v for v in data.values() if isinstance(v, list)), [])
+            diag[name] = {
+                (subjects.get(str((r.get("Subject") or {}).get("Id")), "") or "?"): 0
+                for r in rows
+            }
+            for r in rows:
+                key = subjects.get(str((r.get("Subject") or {}).get("Id")), "") or "?"
+                diag[name][key] += 1
+        except Exception as err:
+            diag[name] = f"niedostępne: {str(err)[:80]}"
+    return result, diag
 
 
 class LibrusClient:
@@ -459,6 +493,7 @@ class LibrusClient:
         self._detail_cache: dict[str, tuple[float, dict[str, str]]] = {}
         self._detail_budget = DETAIL_MAX_FETCH
         self._recipients_cache: tuple[float, list[dict[str, str]]] | None = None
+        self.grades_api_info: dict[str, Any] = {}
 
     async def login(self) -> None:
         async with self._auth_lock:
@@ -596,7 +631,9 @@ class LibrusClient:
         try:
             await self._ensure_login()
             known = {str(g.get("subject_name") or "").strip().casefold() for g in result}
-            extra = await asyncio.to_thread(_fetch_grades_gateway_sync, self._client, known)
+            extra, self.grades_api_info = await asyncio.to_thread(
+                _fetch_grades_gateway_sync, self._client, known
+            )
             if extra:
                 _LOGGER.debug(
                     "Added %d grades from the API for subjects missing on the grades page: %s",
@@ -605,6 +642,7 @@ class LibrusClient:
             result.extend(extra)
         except Exception as err:  # the page result is still valid on its own
             _LOGGER.debug("Grades via gateway unavailable: %s", err)
+            self.grades_api_info = {"status": f"błąd: {str(err)[:200]}"}
 
         # 0.5.0: chronological across all subjects (oldest first), so the
         # newest grade is always grades[-1] - Librus returns them per subject.
@@ -1297,4 +1335,5 @@ class LibrusClient:
             "school_events": school_events,
             "cancelled_lessons": cancellations,
             "notes": notes,
+            "grades_api": self.grades_api_info,
         }

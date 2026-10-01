@@ -185,6 +185,8 @@ class GradesEntity(Base):
             "values": values,
             # Newest grade (list is chronological since 0.5.0).
             "latest": grades[-1] if grades else None,
+            # Diagnostics (0.6.3): what the Librus API returned for grades.
+            "api_diagnostics": self.coordinator.data.get("grades_api"),
             **_grade_stats(grades),
         }
 
