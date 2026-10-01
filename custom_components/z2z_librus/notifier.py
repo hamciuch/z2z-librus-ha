@@ -9,7 +9,9 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable
 
-from homeassistant.core import HomeAssistant
+from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
+from homeassistant.core import CoreState, Event, HomeAssistant, callback
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.storage import Store
 
 from .const import (
@@ -28,6 +30,9 @@ MAX_KEYS = 3000
 # More "new" items than this in one refresh is not real news (e.g. Librus
 # changed its ids): remember them silently instead of spamming.
 BURST_LIMIT = 25
+# Events found during Home Assistant startup are held back until HA has
+# started plus this delay, so automations are already listening (0.6.5).
+STARTUP_DELAY_SECONDS = 30
 
 
 def _join(item: dict[str, Any], *fields: str) -> str:
@@ -132,11 +137,31 @@ class NewItemTracker:
         if changed:
             await self._store.async_save({"seen": self._seen})
 
-        for event_type, item in to_fire:
-            self.hass.bus.async_fire(
-                event_type,
-                {"entry_id": self.entry_id, "student": student, **item},
-            )
+        if not to_fire:
+            return
+        payloads = [
+            (event_type, {"entry_id": self.entry_id, "student": student, **item})
+            for event_type, item in to_fire
+        ]
+        if self.hass.state is CoreState.running:
+            self._fire(payloads)
+            return
+
+        @callback
+        def _fire_later(_now) -> None:
+            self._fire(payloads)
+
+        @callback
+        def _started(_event: Event) -> None:
+            async_call_later(self.hass, STARTUP_DELAY_SECONDS, _fire_later)
+
+        _LOGGER.debug("Holding %d events until Home Assistant has started", len(payloads))
+        self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _started)
+
+    @callback
+    def _fire(self, payloads: list[tuple[str, dict[str, Any]]]) -> None:
+        for event_type, data in payloads:
+            self.hass.bus.async_fire(event_type, data)
 
 
 def storage_key(entry_id: str) -> str:
