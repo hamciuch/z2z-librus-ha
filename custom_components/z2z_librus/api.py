@@ -194,7 +194,34 @@ def _parse_send_result(html: str) -> tuple[str, bool]:
 NOTES_URL = "/uwagi"
 GATEWAY_NOTES = "/gateway/api/2.0/Notes"
 NOTE_TYPES = {1: "pozytywna", 0: "negatywna"}
-NOTE_TYPE_WORDS = (("pozytyw", "pozytywna"), ("negatyw", "negatywna"))
+NOTE_TYPE_WORDS = (
+    ("pozytyw", "pozytywna"),
+    ("pochwał", "pozytywna"),
+    ("pochwal", "pozytywna"),
+    ("negatyw", "negatywna"),
+    ("nagan", "negatywna"),
+)
+
+
+def _note_type_from_flag(value: Any) -> str | None:
+    """Librus API 'Positive' flag: 1/true = pozytywna, 0/false = negatywna."""
+    if isinstance(value, bool):
+        return "pozytywna" if value else "negatywna"
+    text = str(value).strip().casefold()
+    if text in ("1", "true", "tak"):
+        return "pozytywna"
+    if text in ("0", "false", "nie"):
+        return "negatywna"
+    return None
+
+
+def _raw(value: Any) -> Any:
+    """Compact copy of an API object for diagnostics (no long texts, no URLs)."""
+    if isinstance(value, dict):
+        return {k: _raw(v) for k, v in value.items() if k not in ("Text", "Url")}
+    if isinstance(value, list):
+        return [_raw(v) for v in value[:5]]
+    return value
 
 
 def _note_type_from_text(*texts: str) -> str:
@@ -216,9 +243,11 @@ def _fetch_notes_gateway_sync(client) -> list[dict[str, Any]]:
     notes = _gateway_json(client, GATEWAY_NOTES).get("Notes") or []
 
     categories: dict[str, str] = {}
+    category_types: dict[str, dict[str, Any]] = {}
     try:
         for c in _gateway_json(client, GATEWAY_NOTES + "/Categories").get("Categories") or []:
             categories[str(c.get("Id"))] = _clean_text(c.get("Name"))
+            category_types[str(c.get("Id"))] = c
     except Exception as err:  # names are a nicety
         _LOGGER.debug("Notes categories unavailable: %s", err)
 
@@ -234,12 +263,13 @@ def _fetch_notes_gateway_sync(client) -> list[dict[str, Any]]:
                 )
             except Exception:
                 teachers[teacher_id] = ""
-        positive = n.get("Positive")
-        try:
-            kind = NOTE_TYPES.get(int(positive), "neutralna")
-        except (TypeError, ValueError):
-            kind = "neutralna"
-        category = categories.get(str((n.get("Category") or {}).get("Id")), "")
+        category_id = str((n.get("Category") or {}).get("Id"))
+        category = categories.get(category_id, "")
+        kind = (
+            _note_type_from_flag(n.get("Positive"))
+            or _note_type_from_flag((category_types.get(category_id) or {}).get("Positive"))
+            or _note_type_from_text(category)
+        )
         result.append(
             {
                 "id": str(n.get("Id") or "") or None,
@@ -252,6 +282,11 @@ def _fetch_notes_gateway_sync(client) -> list[dict[str, Any]]:
                 "positive": kind == "pozytywna",
                 "negative": kind == "negatywna",
                 "source": "api",
+                # Diagnostics (0.6.1): API fields without the note text.
+                "raw": {
+                    "note": _raw(n),
+                    "category": _raw(category_types.get(category_id)),
+                },
             }
         )
     return result
@@ -284,6 +319,9 @@ def _fetch_notes_html_sync(client) -> list[dict[str, Any]]:
                     break
         if "text" not in columns.values():
             continue
+        headers = [
+            _clean_text(c.get_text(" ")) for c in header.find_all(["th", "td"])
+        ]
         body_rows = table.select("tbody tr") or table.find_all("tr")[1:]
         for row in body_rows:
             cells = row.find_all("td")
@@ -292,9 +330,16 @@ def _fetch_notes_html_sync(client) -> list[dict[str, Any]]:
             item = {f: _clean_text(cells[i].get_text(" ")) for i, f in columns.items() if i < len(cells)}
             if not item.get("text"):
                 continue
+            markers = " ".join(
+                [" ".join(row.get("class", [])), _clean_text(row.get("title", ""))]
+                + [
+                    " ".join(el.get("class", [])) + " " + _clean_text(el.get("title", ""))
+                    + " " + _clean_text(el.get("alt", ""))
+                    for el in row.find_all(True)
+                ]
+            )
             kind = _note_type_from_text(
-                item.get("kind", ""), item.get("category", ""),
-                " ".join(row.get("class", [])), _clean_text(row.get("title", "")),
+                item.get("kind", ""), item.get("category", ""), markers,
             )
             date_match = re.search(r"\d{4}-\d{2}-\d{2}", item.get("date", ""))
             result.append(
@@ -309,6 +354,16 @@ def _fetch_notes_html_sync(client) -> list[dict[str, Any]]:
                     "positive": kind == "pozytywna",
                     "negative": kind == "negatywna",
                     "source": "html",
+                    # Diagnostics (0.6.1): page structure without the text.
+                    "raw": {
+                        "headers": headers,
+                        "cells": [
+                            _clean_text(c.get_text(" "))[:40]
+                            for i, c in enumerate(cells)
+                            if columns.get(i) != "text"
+                        ],
+                        "markers": markers[:300],
+                    },
                 }
             )
     return result

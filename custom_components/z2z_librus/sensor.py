@@ -57,19 +57,25 @@ def _grade_stats(grades):
 
 
 def _all_subjects(data):
-    """Subjects from both grades and timetable, so zero-grade subjects also exist."""
-    subjects = set()
+    """Subjects from both grades and timetable, so zero-grade subjects also exist.
+
+    Compared case-insensitively (the grades page and the timetable may spell
+    a subject differently, e.g. "Wychowanie fizyczne" vs "wychowanie
+    fizyczne"); the grades-page spelling wins.
+    """
+    subjects: dict[str, str] = {}
     for g in data.get("grades", []):
-        if g.get("subject_name"):
-            subjects.add(g["subject_name"].strip())
+        name = str(g.get("subject_name") or "").strip()
+        if name:
+            subjects.setdefault(name.casefold(), name)
     for lesson in data.get("timetable", []):
         if lesson.get("subject"):
             # Multiple subjects can occasionally be joined with " / ".
             for subject in lesson["subject"].split(" / "):
                 subject = subject.strip()
                 if subject:
-                    subjects.add(subject)
-    return sorted(subjects, key=str.casefold)
+                    subjects.setdefault(subject.casefold(), subject)
+    return sorted(subjects.values(), key=str.casefold)
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -198,7 +204,8 @@ class SubjectGradesEntity(Base):
     def rows(self):
         return [
             g for g in self.coordinator.data.get("grades", [])
-            if g.get("subject_name") == self.subject
+            if str(g.get("subject_name") or "").strip().casefold()
+            == self.subject.casefold()
         ]
 
     @property
