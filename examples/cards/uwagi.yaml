@@ -1,9 +1,14 @@
 # Karta "Uwagi" (z2z_librus >= 0.6.0). Wklej: Edytuj pulpit -> Dodaj kartę ->
-# Ręcznie (YAML). Zmień ID sensora w linii "set e = ..." na swoje.
+# Ręcznie (YAML). Sensor jest wyszukiwany sam: zmień "gabriel" na fragment
+# imienia dziecka (małymi literami, tak jak w ID encji).
 type: markdown
 title: 📝 Uwagi — Gabi
 content: |-
-  {%- set e = 'sensor.librus_gabriela_sobilo_uwagi' -%}
+  {%- set e = states.sensor | selectattr('entity_id', 'search', 'gabriel.*_uwagi$')
+      | map(attribute='entity_id') | first | default('') -%}
+  {%- if not e -%}
+  ❗ Nie znaleziono sensora uwag (szukam encji kończącej się na „_uwagi” z „gabriel” w nazwie).
+  {%- else -%}
   {%- set notes = state_attr(e, 'notes') or [] -%}
   {%- set types = {
       'pozytywna': ('success', '👍 Pochwała'),
@@ -23,3 +28,4 @@ content: |-
   {% else -%}
   Brak uwag 🎉
   {%- endfor %}
+  {%- endif %}
