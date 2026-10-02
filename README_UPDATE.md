@@ -1,18 +1,16 @@
-# Z2Z Librus v0.4.1
+# Z2Z Librus v0.8.1
 
-Oceny: pełna obsługa symboli Librusa (`np`, `bz`, `nk`, `uł`, `nł`, `zl`, `nz`, `zw`, `uc`, `nu`, `+`, `-`, `0` …).
+Ważna poprawka dla kilku kont (np. dwoje dzieci):
 
-- Każda ocena ma nowe pola: `kind` (`grade`/`plus`/`minus`/`symbol`), `label`
-  (opis z legendy, np. `np` → `nieprzygotowany`), `id`, `weight`, `counts`, `comment`.
-- `counts` jest `null`, gdy Librus nie pokazuje „Licz do średniej” (wcześniej
-  biblioteka zwracała wtedy fałszywe `false`).
-- Sensory ocen (zbiorczy i per przedmiot) mają `symbol_counts`, `symbol_labels`,
-  `numeric_count` i liczniki `<symbol>_count` dla wszystkich znanych symboli.
-  Liczenie jest niewrażliwe na wielkość liter (`NP` = `np`).
-- Dotychczasowe atrybuty (`values`, `plus_count`, `minus_count`, `np_count`,
-  `bz_count`) działają bez zmian.
+- librus-apix domyślnie daje wszystkim klientom w procesie **jeden wspólny
+  słoik ciasteczek**. Token API (`oauth_token`) jednego dziecka był więc
+  wysyłany z zapytaniami drugiego. Oceny z API, oceny punktowe (WF) i uwagi
+  pochodziły od tego dziecka, które ostatnio odświeżyło token. Stąd WF raz
+  był, raz nie (od 0.8.0 token jest odświeżany rzadziej, więc znikał na
+  stałe). Teraz każde konto ma własne ciasteczka.
+- Ocena punktowa 0 pkt nie jest już pusta.
+- Listy znanych ocen i uwag są po aktualizacji cicho zapamiętywane od nowa,
+  więc poprawione dane nie wywołają powiadomień o starych ocenach.
 
-Uwaga: nowa ocena pojawia się w HA dopiero po najbliższym odświeżeniu
-(domyślnie co 30 min) albo po wciśnięciu przycisku odświeżania.
-
-Po aktualizacji zrestartuj Home Assistant.
+Po aktualizacji zrestartuj Home Assistant (samo przeładowanie nie wystarczy,
+bo stary słoik ciasteczek żyje w pamięci procesu).

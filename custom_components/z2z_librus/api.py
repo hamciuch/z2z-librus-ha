@@ -9,6 +9,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Callable
 
 from librus_apix.client import new_client
+from requests.cookies import RequestsCookieJar
 from librus_apix.exceptions import AuthorizationError, TokenError
 
 from .const import GRADE_SYMBOLS
@@ -527,7 +528,8 @@ def _fetch_grades_gateway_sync(
             if not subject:
                 continue
             value = next(
-                (_clean_text(g.get(f)) for f in ("Grade", "GradeValue", "Value", "Points")
+                # str() first: 0 points must stay "0", not "" (0.8.1)
+                (_clean_text(str(g.get(f))) for f in ("Grade", "GradeValue", "Value", "Points")
                  if g.get(f) not in (None, "")),
                 "",
             )
@@ -600,6 +602,20 @@ def _fetch_api_sync(client, skip_subjects: set[str], cache: ApiCache):
     return grades, diag, notes
 
 
+def _new_isolated_client():
+    """librus-apix client with its OWN cookie jar (0.8.1).
+
+    librus-apix's Client(extra_cookies=RequestsCookieJar()) default is a
+    single jar shared by every client in the process. With two students
+    (two config entries) the gateway oauth_token cookie of one child was
+    sent with the other child's API requests, so grades, point grades (WF)
+    and notes came from whichever account refreshed its token last.
+    """
+    client = new_client()
+    client.cookies = RequestsCookieJar()
+    return client
+
+
 class LibrusClient:
     """Async wrapper around librus-apix."""
 
@@ -625,7 +641,7 @@ class LibrusClient:
     async def login(self) -> None:
         async with self._auth_lock:
             try:
-                self._client = await asyncio.to_thread(new_client)
+                self._client = await asyncio.to_thread(_new_isolated_client)
                 self._token = await asyncio.to_thread(
                     self._client.get_token,
                     self.username,
