@@ -1,16 +1,20 @@
-# Z2Z Librus v0.8.1
+# Z2Z Librus v0.9.0
 
-Ważna poprawka dla kilku kont (np. dwoje dzieci):
+- **Bezpiecznik konta:** dane z API są używane tylko wtedy, gdy `/Me` potwierdza
+  login tego wpisu (po imieniu i nazwisku, gdy loginu brak). Inne konto →
+  odnowienie tokenu, a gdy nie pomaga → dane z API odrzucone, błąd w logu.
+- **Oceny punktowe:** `4` zamiast `4.00`, nowe pole `points_text` (np. `4/5 pkt`).
+- **Jedna funkcja budująca ocenę** dla strony ocen, API i ocen punktowych - te
+  same pola niezależnie od źródła; nowe pole `source` także dla strony (`page`).
+- **Ostatnie dane z API zapisywane w `.storage`** - oceny punktowe i uwagi nie
+  znikają, gdy po restarcie HA API akurat nie działa.
+- **Historia HA:** długie listy atrybutów nie trafiają do bazy (limit 16 KB).
+- **Sprzątanie:** bez pól diagnostycznych `raw`, `wf_samples`, `point_samples`;
+  `api_diagnostics` ma `account_check`, `point_grades` i czytelne liczniki.
+- **Logi:** awaria strony ocen nie jest już opisywana jako awaria API.
+- **librus-apix >= 1.5.3, < 2** (1.5.3 czyta więcej ocen opisowych).
+- **Testy (pytest) i CI:** testy, hassfest i walidacja HACS przy każdym pushu.
 
-- librus-apix domyślnie daje wszystkim klientom w procesie **jeden wspólny
-  słoik ciasteczek**. Token API (`oauth_token`) jednego dziecka był więc
-  wysyłany z zapytaniami drugiego. Oceny z API, oceny punktowe (WF) i uwagi
-  pochodziły od tego dziecka, które ostatnio odświeżyło token. Stąd WF raz
-  był, raz nie (od 0.8.0 token jest odświeżany rzadziej, więc znikał na
-  stałe). Teraz każde konto ma własne ciasteczka.
-- Ocena punktowa 0 pkt nie jest już pusta.
-- Listy znanych ocen i uwag są po aktualizacji cicho zapamiętywane od nowa,
-  więc poprawione dane nie wywołają powiadomień o starych ocenach.
-
-Po aktualizacji zrestartuj Home Assistant (samo przeładowanie nie wystarczy,
-bo stary słoik ciasteczek żyje w pamięci procesu).
+Po aktualizacji zrestartuj Home Assistant. Lista znanych ocen jest cicho
+zapamiętywana od nowa (zmiana formatu punktów), więc nie przyjdą powiadomienia
+o starych ocenach.

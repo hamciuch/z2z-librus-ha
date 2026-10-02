@@ -38,6 +38,12 @@ Sensory „Wszystkie oceny” i „Oceny – przedmiot” mają dodatkowo:
 
 Nieznane symbole (własne w danej szkole) nie są gubione. Trafiają do `symbol_counts` z `label: null`.
 
+### Oceny punktowe (np. WF)
+Mają `kind: points`, `label: ocena punktowa`, `display_value` bez zbędnych zer (`4`, nie `4.00`), `max_points` (gdy Librus go podaje) i gotowy tekst `points_text` (np. `4/5 pkt`). Liczone są w `points_count`, nie w `symbol_counts`. Każda ocena ma też `source`: `api` albo `page` (strona ocen).
+
+### Atrybuty a historia HA
+Długie listy (`grades`, `values`, `latest`, `notes`, `records`, `homework`, `messages`, `api_diagnostics`, treść wiadomości) są widoczne w kartach i szablonach, ale **nie są zapisywane w bazie historii** (`_unrecorded_attributes`). Bez tego atrybuty przekraczały limit 16 KB rekordera, a baza puchła.
+
 ## Powiadomienia o nowościach (od 0.5.0)
 Integracja odpala zdarzenia Home Assistanta **tylko dla naprawdę nowych** elementów:
 - `z2z_librus_new_grade`: dane zdarzenia to pola oceny (`subject_name`, `display_value`, `label`, `date`, `category_name`, `weight`, `comment`, …),
@@ -63,7 +69,13 @@ Przy typowym odświeżeniu (co 30 min) integracja wysyła ok. 6–7 zapytań. Wc
 - **Co 6 godzin:** słowniki API (przedmioty, kategorie, nauczyciele) i strona ocen. Strona ocen tylko uzupełnia to, czego nie ma w API (np. oceny śródroczne). Gdy API nie działa, strona jest czytana od razu.
 - **Raz:** treść wiadomości i szczegóły wydarzeń z terminarza.
 
-Gdy któreś zapytanie się nie powiedzie, zostaje ostatnia poprawnie pobrana kopia danych.
+Gdy któreś zapytanie się nie powiedzie, zostaje ostatnia poprawnie pobrana kopia danych. Ostatnie dane z API (oceny punktowe, uwagi) są od 0.9.0 zapisywane w `.storage`, więc przetrwają też restart HA, gdy API akurat nie działa.
+
+## Kilka kont (dwoje dzieci)
+Każde konto dodajesz jako osobny wpis integracji. Od 0.8.1 każde ma własne ciasteczka (wcześniej `librus-apix` miał jeden wspólny słoik i dane z API jednego dziecka trafiały do drugiego). Od 0.9.0 przed użyciem danych z API integracja sprawdza w `/Me`, czy API odpowiada dla właściwego loginu; jeśli nie, odnawia token, a gdy to nie pomaga, odrzuca dane z API (błąd w logu, `api_diagnostics.status`). Wynik sprawdzenia: `api_diagnostics.account_check` (`login` / `name` / `unknown`).
+
+## Diagnostyka ocen
+Atrybut `api_diagnostics` sensora „Wszystkie oceny”: `status`, `account_check`, `api_grades`, `point_grades` oraz `subjects` z licznikami per przedmiot (`api`, `semestral`, `points`, `unknown_subject`). Gdy jakiś przedmiot nie ma ocen, zacznij od tego atrybutu.
 
 ## Odpowiadanie na wiadomości (od 0.4.0, domyślnie wyłączone)
 Wysyła **prawdziwe wiadomości** do nauczycieli, dlatego trzeba to włączyć świadomie:
@@ -90,6 +102,13 @@ data:
   content: "Proszę o zwolnienie ..."
 ```
 Zabezpieczenia: adresat odpowiedzi jest ustalany po nazwisku nadawcy na liście odbiorców Librusa i **gdy nie jest jednoznaczny, nic nie jest wysyłane**; ta sama wiadomość nie zostanie wysłana dwa razy w ciągu 2 minut; odstęp między wysyłkami min. 10 s; wysyłka nie jest nigdy ponawiana automatycznie; treść wiadomości nie trafia do logów.
+
+## Testy
+```bash
+pip install -r requirements_test.txt
+pytest
+```
+Testy działają bez Home Assistanta (proste atrapy w `tests/conftest.py`) i na zanonimizowanej stronie ocen (`tests/fixtures`). GitHub Actions uruchamia je przy każdym pushu razem z walidacją hassfest i HACS.
 
 ## Debug
 ```yaml

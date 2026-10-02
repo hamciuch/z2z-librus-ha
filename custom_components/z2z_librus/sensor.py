@@ -167,6 +167,11 @@ class LuckyNumberEntity(Base):
 class GradesEntity(Base):
     _attr_name = "Wszystkie oceny"
     _attr_icon = "mdi:format-list-numbered"
+    # Long lists stay available to cards/templates but are not written to the
+    # recorder (16 KB attribute limit, database size) - 0.9.0.
+    _unrecorded_attributes = frozenset(
+        {"grades", "values", "latest", "api_diagnostics", "symbol_labels"}
+    )
 
     @property
     def unique_id(self):
@@ -194,6 +199,7 @@ class GradesEntity(Base):
 
 class SubjectGradesEntity(Base):
     _attr_icon = "mdi:book-education"
+    _unrecorded_attributes = frozenset({"grades", "values", "symbol_labels"})
 
     def __init__(self, coordinator, entry, subject):
         super().__init__(coordinator, entry)
@@ -231,6 +237,7 @@ class SubjectGradesEntity(Base):
 class AttendanceEntity(Base):
     _attr_name = "Frekwencja"
     _attr_icon = "mdi:account-check"
+    _unrecorded_attributes = frozenset({"records"})
 
     @property
     def unique_id(self):
@@ -253,6 +260,7 @@ class AttendanceEntity(Base):
 class HomeworkEntity(Base):
     _attr_name = "Zadania domowe"
     _attr_icon = "mdi:book-open-page-variant"
+    _unrecorded_attributes = frozenset({"homework"})
 
     @property
     def unique_id(self):
@@ -270,6 +278,7 @@ class HomeworkEntity(Base):
 class MessagesEntity(Base):
     _attr_name = "Wiadomości"
     _attr_icon = "mdi:email"
+    _unrecorded_attributes = frozenset({"messages"})
 
     @property
     def unique_id(self):
@@ -296,6 +305,7 @@ class NotesEntity(Base):
 
     _attr_name = "Uwagi"
     _attr_icon = "mdi:note-alert-outline"
+    _unrecorded_attributes = frozenset({"notes", "latest", "latest_negative"})
 
     @property
     def unique_id(self):
@@ -323,6 +333,7 @@ class NotesEntity(Base):
 
 class RecentMessageEntity(Base):
     _attr_icon = "mdi:email-open-outline"
+    _unrecorded_attributes = frozenset({"content"})
 
     def __init__(self, coordinator, entry, index):
         super().__init__(coordinator, entry)

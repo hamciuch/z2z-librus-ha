@@ -27,10 +27,11 @@ _LOGGER = logging.getLogger(__name__)
 
 STORAGE_VERSION = 1
 # Bumped when a key format changes; those kinds get a silent new baseline.
-KEY_SCHEMA = 3
+KEY_SCHEMA = 4
 # 3 (0.8.1): API data of one child could belong to the other (shared cookie
 # jar) - grades and notes get a silent new baseline after the fix.
-SCHEMA_RESET_KINDS = {2: ("grades",), 3: ("grades", "notes")}
+# 4 (0.9.0): point grades shown as "4" instead of "4.00" (new grade keys).
+SCHEMA_RESET_KINDS = {2: ("grades",), 3: ("grades", "notes"), 4: ("grades",)}
 # Seen keys kept per kind (a school year has a few hundred grades at most).
 MAX_KEYS = 3000
 # More "new" items than this in one refresh is not real news (e.g. Librus

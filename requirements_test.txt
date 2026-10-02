@@ -1,0 +1,3 @@
+pytest>=8
+librus-apix>=1.5.3,<2
+lxml

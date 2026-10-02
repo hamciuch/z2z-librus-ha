@@ -193,6 +193,138 @@ def _parse_send_result(html: str) -> tuple[str, bool]:
     return (_clean_text(paragraph.get_text(" ")) if paragraph else ""), False
 
 
+# --- One grade dict for every source (0.9.0) --------------------------------
+
+def grade_kind(value: str) -> str:
+    """grade (1-6 with +/-), plus, minus, symbol (np, bz, ...) or empty."""
+    if GRADE_NUMERIC_RE.match(value):
+        return "grade"
+    if value in ("+", "-"):
+        return "plus" if value == "+" else "minus"
+    return "symbol" if value else "empty"
+
+
+def format_points(value: Any) -> str:
+    """'4.00' -> '4', '4.50' -> '4.5', 0 -> '0'; non-numbers unchanged."""
+    text = _clean_text(str(value)) if value is not None else ""
+    try:
+        number = float(text.replace(",", "."))
+    except ValueError:
+        return text
+    return f"{number:g}"
+
+
+def build_grade(
+    value: Any,
+    *,
+    subject: str,
+    date: str,
+    category: str = "",
+    teacher: str = "",
+    semester: Any = None,
+    grade_type: str = "numeric",
+    grade_id: str | None = None,
+    weight: Any = None,
+    counts: bool | None = None,
+    comment: str | None = None,
+    source: str = "page",
+    max_points: Any = None,
+) -> dict[str, Any]:
+    """The grade dict used by sensors, events and the notifier.
+
+    Same fields whatever the source (grades page, API grades, API point
+    grades), so automations and cards never have to care where it came from.
+    """
+    points = grade_type == "points"
+    display = format_points(value) if points else _clean_text(value)
+    kind = "points" if points else grade_kind(display.casefold())
+    if kind == "grade" or points:
+        label = "ocena punktowa" if points else None
+    else:
+        label = GRADE_SYMBOLS.get(display.casefold())
+    grade: dict[str, Any] = {
+        "subject_name": _clean_text(subject),
+        "display_value": display,
+        "date": str(date or "")[:10],
+        "category_name": _clean_text(category),
+        "teacher": _clean_text(teacher),
+        "semester": semester,
+        "type": grade_type,
+        "id": grade_id or None,
+        "kind": kind,
+        "label": label,
+        "weight": weight if isinstance(weight, int) and not isinstance(weight, bool) and weight > 0 else None,
+        "counts": counts if isinstance(counts, bool) else None,
+        "comment": comment or None,
+        "source": source,
+    }
+    if points:
+        maximum = format_points(max_points) if max_points not in (None, "") else None
+        grade["max_points"] = maximum
+        grade["points_text"] = f"{display}/{maximum} pkt" if maximum else f"{display} pkt"
+    return grade
+
+
+# --- Account guard (0.9.0) ---------------------------------------------------
+# Never show one child's API data on the other child's device again (see
+# _new_isolated_client). The API's own idea of the account is compared with
+# the login used for this config entry once per OAuth token.
+GATEWAY_ME = "/gateway/api/2.0/Me"
+ACCOUNT_OK_KEY = "__account_ok__"
+
+
+class AccountMismatch(Exception):
+    """The gateway API answers for a different account than this entry's."""
+
+
+def _normalize_name(name: str) -> frozenset[str]:
+    return frozenset(_clean_text(name).casefold().split())
+
+
+def _login_key(login: Any) -> str:
+    """'1234567u' and '1234567' are the same account: compare the digits."""
+    text = _clean_text(login).casefold()
+    return re.sub(r"\D", "", text) or text
+
+
+def _check_account(client, account: dict[str, str], cache: ApiCache) -> str:
+    """'login' / 'name' / 'unknown' when the API account is acceptable.
+
+    Raises AccountMismatch only on hard evidence of another account: a
+    different student name, or a different login when no name is known.
+    The result is cached until the next OAuth refresh (caller drops it).
+    """
+    hit = cache.get(ACCOUNT_OK_KEY)
+    if hit:
+        return hit[1]
+    data = _gateway_json(client, GATEWAY_ME)
+    me = data.get("Me") if isinstance(data, dict) else None
+    if not isinstance(me, dict):
+        raise ValueError(f"Unexpected API answer for {GATEWAY_ME}: {str(data)[:120]}")
+    acc = me.get("Account") or {}
+    user = me.get("User") or {}
+    api_login = _login_key(acc.get("Login"))
+    want_login = _login_key(account.get("login"))
+    api_name = _normalize_name(
+        f"{acc.get('FirstName') or user.get('FirstName') or ''} "
+        f"{acc.get('LastName') or user.get('LastName') or ''}"
+    )
+    want_name = _normalize_name(account.get("name") or "")
+
+    if api_login and want_login and api_login == want_login:
+        how = "login"
+    elif api_name and want_name:
+        if api_name != want_name:
+            raise AccountMismatch("API answers for a different student")
+        how = "name"
+    elif api_login and want_login:
+        raise AccountMismatch("API login differs from this entry's login")
+    else:
+        how = "unknown"  # nothing to compare - do not block the data
+    cache[ACCOUNT_OK_KEY] = (float("inf"), how)
+    return how
+
+
 # --- Uwagi (notes), 0.6.0 -------------------------------------------------
 # librus-apix has no notes module. The gateway API (same session as
 # attendance) gives structured data incl. positive/negative; the /uwagi page
@@ -219,15 +351,6 @@ def _note_type_from_flag(value: Any) -> str | None:
     if text in ("0", "false", "nie"):
         return "negatywna"
     return None
-
-
-def _raw(value: Any) -> Any:
-    """Compact copy of an API object for diagnostics (no long texts, no URLs)."""
-    if isinstance(value, dict):
-        return {k: _raw(v) for k, v in value.items() if k not in ("Text", "Url")}
-    if isinstance(value, list):
-        return [_raw(v) for v in value[:5]]
-    return value
 
 
 def _note_type_from_text(*texts: str) -> str:
@@ -321,11 +444,6 @@ def _fetch_notes_gateway_sync(client, cache: ApiCache | None = None) -> list[dic
                 "positive": kind == "pozytywna",
                 "negative": kind == "negatywna",
                 "source": "api",
-                # Diagnostics (0.6.1): API fields without the note text.
-                "raw": {
-                    "note": _raw(n),
-                    "category": _raw(category_types.get(category_id)),
-                },
             }
         )
     return result
@@ -358,9 +476,6 @@ def _fetch_notes_html_sync(client) -> list[dict[str, Any]]:
                     break
         if "text" not in columns.values():
             continue
-        headers = [
-            _clean_text(c.get_text(" ")) for c in header.find_all(["th", "td"])
-        ]
         body_rows = table.select("tbody tr") or table.find_all("tr")[1:]
         for row in body_rows:
             cells = row.find_all("td")
@@ -393,16 +508,6 @@ def _fetch_notes_html_sync(client) -> list[dict[str, Any]]:
                     "positive": kind == "pozytywna",
                     "negative": kind == "negatywna",
                     "source": "html",
-                    # Diagnostics (0.6.1): page structure without the text.
-                    "raw": {
-                        "headers": headers,
-                        "cells": [
-                            _clean_text(c.get_text(" "))[:40]
-                            for i, c in enumerate(cells)
-                            if columns.get(i) != "text"
-                        ],
-                        "markers": markers[:300],
-                    },
                 }
             )
     return result
@@ -435,13 +540,14 @@ def _grade_comment(client, g: dict[str, Any], cache: ApiCache | None) -> str | N
 
 
 def _fetch_grades_gateway_sync(
-    client, skip_subjects: set[str], cache: ApiCache | None = None
+    client, cache: ApiCache | None = None
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Regular grades of subjects the grades page parser missed (0.6.2).
+    """Regular and point grades from the gateway API (main source since 0.8.0).
 
-    librus-apix silently skips some rows of the grades page (seen with
-    "wychowanie fizyczne"). Only subjects completely absent from the page
-    result are taken from the API, so nothing can be listed twice.
+    Semestral / final grades are skipped here - the grades page adds them.
+    Point grades (oceny punktowe, e.g. WF in some schools) live outside
+    /Grades and in a page table librus-apix does not read, so the API is
+    their only source.
     """
     grades = _gateway_rows(client, "/gateway/api/2.0/Grades")
     subjects = {
@@ -455,63 +561,48 @@ def _fetch_grades_gateway_sync(
     except Exception as err:
         _LOGGER.debug("Grade categories unavailable: %s", err)
 
-    users = cache
-    result = []
+    result: list[dict[str, Any]] = []
     per_subject: dict[str, dict[str, int]] = {}
-    samples: list[dict[str, Any]] = []
-    for g in grades:
-        subject = subjects.get(str((g.get("Subject") or {}).get("Id")), "")
-        stats = per_subject.setdefault(subject or f"?{(g.get('Subject') or {}).get('Id')}", {
-            "api": 0, "semestral": 0, "on_page": 0, "added": 0,
+
+    def stats_for(subject: str, subject_id: Any) -> dict[str, int]:
+        return per_subject.setdefault(subject or f"?{subject_id}", {
+            "api": 0, "semestral": 0, "points": 0, "unknown_subject": 0,
         })
+
+    def teacher(g: dict[str, Any]) -> str:
+        return _gateway_user_name(client, str((g.get("AddedBy") or {}).get("Id") or ""), cache)
+
+    for g in grades:
+        subject_id = (g.get("Subject") or {}).get("Id")
+        subject = subjects.get(str(subject_id), "")
+        stats = stats_for(subject, subject_id)
         stats["api"] += 1
-        if "fiz" in subject.casefold() and len(samples) < 5:
-            samples.append(_raw(g))
         if any(g.get(f) for f in (
             "IsSemester", "IsSemesterProposition", "IsFinal", "IsFinalProposition",
         )):
             stats["semestral"] += 1
             continue  # only regular (bieżące) grades, like the page parser
-        if not subject or subject.casefold() in skip_subjects:
-            stats["on_page"] += 1
+        if not subject:
+            stats["unknown_subject"] += 1
             continue
-        stats["added"] += 1
-        value = _clean_text(g.get("Grade"))
-        symbol = value.casefold()
-        if GRADE_NUMERIC_RE.match(value):
-            kind = "grade"
-        elif symbol in ("+", "-"):
-            kind = "plus" if symbol == "+" else "minus"
-        else:
-            kind = "symbol" if value else "empty"
         category = categories.get(str((g.get("Category") or {}).get("Id"))) or {}
-        weight = category.get("Weight")
-        counts = category.get("CountToTheAverage")
         result.append(
-            {
-                "subject_name": subject,
-                "display_value": value,
-                "date": str(g.get("Date") or "")[:10],
-                "category_name": _clean_text(category.get("Name")),
-                "teacher": _gateway_user_name(
-                    client, str((g.get("AddedBy") or {}).get("Id") or ""), users
-                ),
-                "semester": g.get("Semester"),
-                "type": "numeric",
-                "id": str(g.get("Id") or "") or None,
-                "kind": kind,
-                "label": GRADE_SYMBOLS.get(symbol) if kind != "grade" else None,
-                "weight": weight if isinstance(weight, int) and weight > 0 else None,
-                "counts": counts if isinstance(counts, bool) else None,
-                "comment": _grade_comment(client, g, cache),
-                "source": "api",
-            }
+            build_grade(
+                g.get("Grade"),
+                subject=subject,
+                date=str(g.get("Date") or ""),
+                category=category.get("Name") or "",
+                teacher=teacher(g),
+                semester=g.get("Semester"),
+                grade_id=str(g.get("Id") or "") or None,
+                weight=category.get("Weight"),
+                counts=category.get("CountToTheAverage"),
+                comment=_grade_comment(client, g, cache),
+                source="api",
+            )
         )
 
-    # Point grades (oceny punktowe, e.g. WF in some schools) live outside
-    # /Grades and on a separate table of the grades page that librus-apix
-    # does not read - always take them from the API (0.6.4).
-    point_samples: list[dict[str, Any]] = []
+    points_status = "ok"
     try:
         points = _gateway_rows(client, "/gateway/api/2.0/PointGrades")
         point_categories: dict[str, dict[str, Any]] = {}
@@ -522,14 +613,16 @@ def _fetch_grades_gateway_sync(
         except Exception as err:
             _LOGGER.debug("Point grade categories unavailable: %s", err)
         for g in points:
-            if len(point_samples) < 3:
-                point_samples.append(_raw(g))
-            subject = subjects.get(str((g.get("Subject") or {}).get("Id")), "")
+            subject_id = (g.get("Subject") or {}).get("Id")
+            subject = subjects.get(str(subject_id), "")
+            stats = stats_for(subject, subject_id)
             if not subject:
+                stats["unknown_subject"] += 1
                 continue
+            stats["points"] += 1
+            # 0 points is a real value: test for None/"" only (0.8.1).
             value = next(
-                # str() first: 0 points must stay "0", not "" (0.8.1)
-                (_clean_text(str(g.get(f))) for f in ("Grade", "GradeValue", "Value", "Points")
+                (g.get(f) for f in ("Grade", "GradeValue", "Value", "Points")
                  if g.get(f) not in (None, "")),
                 "",
             )
@@ -539,61 +632,59 @@ def _fetch_grades_gateway_sync(
                  if category.get(f) not in (None, "")),
                 None,
             )
-            weight = category.get("Weight")
-            stats = per_subject.setdefault(subject, {
-                "api": 0, "semestral": 0, "on_page": 0, "added": 0,
-            })
-            stats["points"] = stats.get("points", 0) + 1
             result.append(
-                {
-                    "subject_name": subject,
-                    "display_value": value,
-                    "date": str(g.get("Date") or "")[:10],
-                    "category_name": _clean_text(category.get("Name")),
-                    "teacher": _gateway_user_name(
-                        client, str((g.get("AddedBy") or {}).get("Id") or ""), users
-                    ),
-                    "semester": g.get("Semester"),
-                    "type": "points",
-                    "id": f"pt{g['Id']}" if g.get("Id") else None,
-                    "kind": "points",
-                    "label": "ocena punktowa",
-                    "max_points": max_points,
-                    "weight": weight if isinstance(weight, int) and weight > 0 else None,
-                    "counts": None,
-                    "comment": None,
-                    "source": "api",
-                }
+                build_grade(
+                    value,
+                    subject=subject,
+                    date=str(g.get("Date") or ""),
+                    category=category.get("Name") or "",
+                    teacher=teacher(g),
+                    semester=g.get("Semester"),
+                    grade_type="points",
+                    grade_id=f"pt{g['Id']}" if g.get("Id") else None,
+                    weight=category.get("Weight"),
+                    source="api",
+                    max_points=max_points,
+                )
             )
     except Exception as err:
         status = getattr(getattr(err, "response", None), "status_code", None)
         if status != 404:
             raise  # retried by _gateway(); last good data is kept on failure
+        points_status = "brak (404 - szkoła bez ocen punktowych)"
         _LOGGER.debug("No point grades endpoint for this school: %s", err)
 
     diag: dict[str, Any] = {
         "status": "ok",
-        "point_samples": point_samples,
         "api_grades": len(grades),
+        "point_grades": points_status,
         "subjects": per_subject,
-        "wf_samples": samples,
     }
     return result, diag
 
 
-def _fetch_api_sync(client, skip_subjects: set[str], cache: ApiCache):
+def _fetch_api_sync(client, account: dict[str, str], cache: ApiCache):
     """All gateway-API data in one pass; OAuth refreshed only when needed.
 
-    Returns (extra grades, grade diagnostics, notes or None when notes failed).
+    Returns (grades, diagnostics, notes or None when notes failed). Raises
+    AccountMismatch when the API keeps answering for another account.
     """
+
+    def attempt():
+        how = _check_account(client, account, cache)
+        grades, diag = _fetch_grades_gateway_sync(client, cache)
+        diag["account_check"] = how
+        return grades, diag
+
     try:
-        grades, diag = _fetch_grades_gateway_sync(client, skip_subjects, cache)
+        grades, diag = attempt()
     except Exception as err:
         # The OAuth token lives longer than one refresh; renew it only when
-        # the API refuses (0.8.0) and try once more.
+        # the API refuses or answers for someone else, then try once more.
         _LOGGER.debug("API refused (%s), refreshing OAuth token", err)
         client.refresh_oauth()
-        grades, diag = _fetch_grades_gateway_sync(client, skip_subjects, cache)
+        cache.pop(ACCOUNT_OK_KEY, None)
+        grades, diag = attempt()
     try:
         notes = _fetch_notes_gateway_sync(client, cache)
     except Exception as err:
@@ -637,10 +728,12 @@ class LibrusClient:
         self._month_cache: dict[tuple[int, int], tuple[float, Any]] = {}
         self._message_cache: dict[str, dict[str, Any]] = {}
         self._week_cache: dict[str, tuple[float, Any]] = {}
+        self.state_changed = False  # export_state() worth saving
 
     async def login(self) -> None:
         async with self._auth_lock:
             try:
+                self._api_cache.pop(ACCOUNT_OK_KEY, None)
                 self._client = await asyncio.to_thread(_new_isolated_client)
                 self._token = await asyncio.to_thread(
                     self._client.get_token,
@@ -708,51 +801,28 @@ class LibrusClient:
 
     @staticmethod
     def _grade_to_dict(grade: Any, grade_type: str, subject_fallback: str = "") -> dict[str, Any]:
-        value = str(getattr(grade, "grade", "") or "").strip()
-        symbol = value.casefold()
+        """librus-apix page grade -> common grade dict (see build_grade)."""
         desc = str(getattr(grade, "desc", "") or "")
         href = str(getattr(grade, "href", "") or "")
-
-        if GRADE_NUMERIC_RE.match(value):
-            kind = "grade"
-        elif symbol in ("+", "-"):
-            kind = "plus" if symbol == "+" else "minus"
-        elif value:
-            kind = "symbol"
-        else:
-            kind = "empty"
-
         comment_match = re.search(r"Komentarz:\s*(.+)", desc, re.S)
         id_match = re.search(r"/szczegoly/(\d+)", href)
-        weight = getattr(grade, "weight", None)
         counts = getattr(grade, "counts", None)
-
-        return {
-            "subject_name": str(getattr(grade, "subject", "") or subject_fallback or ""),
-            "display_value": value,
-            "date": str(getattr(grade, "date", "") or ""),
-            "category_name": str(
-                getattr(grade, "category", "")
-                or desc
-                or ""
-            ).split("\n")[0],
-            "teacher": str(getattr(grade, "teacher", "") or ""),
-            "semester": getattr(grade, "semester", None),
-            "type": grade_type,
-            # 0.4.1: details librus-apix already parses but we used to drop.
-            "id": id_match.group(1) if id_match else None,
-            "kind": kind,
-            "label": GRADE_SYMBOLS.get(symbol) if kind != "grade" else None,
-            "weight": weight if isinstance(weight, int) and weight > 0 else None,
+        return build_grade(
+            getattr(grade, "grade", ""),
+            subject=str(getattr(grade, "subject", "") or subject_fallback or ""),
+            date=str(getattr(grade, "date", "") or ""),
+            category=str(getattr(grade, "category", "") or desc or "").split("\n")[0],
+            teacher=str(getattr(grade, "teacher", "") or ""),
+            semester=getattr(grade, "semester", None),
+            grade_type=grade_type,
+            grade_id=id_match.group(1) if id_match else None,
+            weight=getattr(grade, "weight", None),
             # librus-apix reports False also when Librus does not show
             # "Licz do średniej" at all - treat that as unknown.
-            "counts": (
-                counts
-                if isinstance(counts, bool) and "Licz do średniej" in desc
-                else None
-            ),
-            "comment": comment_match.group(1).strip() if comment_match else None,
-        }
+            counts=counts if "Licz do średniej" in desc else None,
+            comment=comment_match.group(1).strip() if comment_match else None,
+            source="page",
+        )
 
     async def get_grades(self) -> list[dict[str, Any]]:
         from librus_apix.grades import get_grades
@@ -837,35 +907,61 @@ class LibrusClient:
             merged.append({**g, "source": "page"})
         return merged
 
+    def _account(self) -> dict[str, str]:
+        hit = self._ttl_cache.get("student")
+        name = (hit[1] or {}).get("Name", "") if hit else ""
+        return {"login": self.username, "name": name}
+
     async def fetch_api_parts(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """(grades, notes): API first, grades page every few hours.
 
-        If the API fails even after a retry, the grades page is read right
-        away, the last good API-only grades (point grades) and notes are
-        kept, and notes fall back to the /uwagi page only when nothing was
-        fetched before.
+        API down: the grades page is read right away and the last good
+        API-only data (point grades, notes) is kept - also across restarts
+        (export_state / import_state). Grades page down: API grades only.
         """
-        notes: list[dict[str, Any]] | None
+        notes: list[dict[str, Any]] | None = None
+        api_grades: list[dict[str, Any]] | None = None
         try:
-            api_grades, self.grades_api_info, notes = await self._gateway(
-                _fetch_api_sync, set(), self._api_cache
+            api_grades, info, notes = await self._gateway(
+                _fetch_api_sync, self._account(), self._api_cache
             )
-            self._last_api_grades = api_grades
-            page = await self._page_grades()
-            grades = self._merge_grades(api_grades, page)
+        except AccountMismatch as err:
+            _LOGGER.error(
+                "Librus API answers for a different account than %s - its data "
+                "is ignored: %s", self.username, err,
+            )
+            self.grades_api_info = {"status": f"odrzucone - inne konto: {err}"}
+            self._api_cache.clear()
+            self._client = None  # fresh login and cookies next time
         except Exception as err:
             _LOGGER.warning("Librus API unavailable, using the grades page: %s", err)
+            self.grades_api_info = {
+                **(self.grades_api_info or {}),
+                "status": f"błąd API (strona ocen + poprzednie dane): {str(err)[:200]}",
+            }
+        else:
+            self.grades_api_info = info
+            if api_grades != self._last_api_grades:
+                self._last_api_grades = api_grades
+                self.state_changed = True
+
+        if api_grades is not None:
+            try:
+                page = await self._page_grades()
+            except Exception as err:
+                _LOGGER.warning("Librus grades page unavailable, API grades only: %s", err)
+                self.grades_api_info["page_status"] = f"błąd: {str(err)[:200]}"
+                page = []
+            grades = self._merge_grades(api_grades, page)
+        else:
             page = await self._page_grades(force=True)
             kept = [g for g in self._last_api_grades if g.get("kind") == "points"]
             grades = self._merge_grades(kept, page)
-            self.grades_api_info = {
-                **(self.grades_api_info or {}),
-                "status": f"błąd (strona ocen + poprzednie dane): {str(err)[:200]}",
-            }
-            notes = None
 
         if notes is not None:
-            self._last_notes = notes
+            if notes != self._last_notes:
+                self._last_notes = notes
+                self.state_changed = True
         elif self._last_notes is not None:
             notes = self._last_notes
         else:
@@ -875,6 +971,23 @@ class LibrusClient:
         notes = list(notes or [])
         notes.sort(key=lambda n: (n.get("date") or "", n.get("added") or "", n.get("id") or ""))
         return grades, notes
+
+    def export_state(self) -> dict[str, Any]:
+        """Last good API-only data, persisted by the coordinator (0.9.0)."""
+        self.state_changed = False
+        return {
+            "login": self.username,
+            "api_grades": self._last_api_grades,
+            "notes": self._last_notes,
+        }
+
+    def import_state(self, state: dict[str, Any] | None) -> None:
+        if not isinstance(state, dict) or state.get("login") != self.username:
+            return
+        if isinstance(state.get("api_grades"), list):
+            self._last_api_grades = state["api_grades"]
+        if isinstance(state.get("notes"), list):
+            self._last_notes = state["notes"]
 
     async def _cached(self, key: str, ttl: float, factory: Callable):
         """Result of factory() kept for ttl seconds; stale copy on errors."""
