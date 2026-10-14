@@ -7,7 +7,7 @@ from conftest import CoreState, MemoryStore
 
 from z2z_librus.api import build_grade
 from z2z_librus.notifier import KEY_SCHEMA, NewItemTracker, storage_key
-from z2z_librus.sensor import _all_subjects, _grade_stats
+from z2z_librus.sensor import _all_subjects, _grade_stats, _new_subjects
 
 
 class Bus:
@@ -111,3 +111,15 @@ def test_subjects_case_insensitive():
         "timetable": [{"subject": "wychowanie fizyczne"}, {"subject": "religia / etyka"}],
     }
     assert _all_subjects(payload) == ["etyka", "religia", "Wychowanie fizyczne"]
+
+
+def test_subject_appearing_later_gets_a_sensor():
+    known: set[str] = set()
+    start = {"grades": [build_grade("5", subject="matematyka", date="d")], "timetable": []}
+    assert _new_subjects(start, known) == ["matematyka"]
+    assert _new_subjects(start, known) == []  # nothing new on a normal refresh
+    later = {
+        "grades": start["grades"] + [build_grade("5", subject="zajęcia techniczne", date="d")],
+        "timetable": [{"subject": "Matematyka"}],
+    }
+    assert _new_subjects(later, known) == ["zajęcia techniczne"]

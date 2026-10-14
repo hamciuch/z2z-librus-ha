@@ -100,12 +100,36 @@ async def async_setup_entry(hass, entry, async_add_entities):
     if entry.options.get(CONF_REPLIES_ENABLED, DEFAULT_REPLIES_ENABLED):
         entities.append(SendStatusEntity(c, entry))
 
-    entities += [
-        SubjectGradesEntity(c, entry, subject)
-        for subject in _all_subjects(c.data)
-    ]
-
+    known: set[str] = set()
+    entities += _new_subject_entities(c, entry, known)
     async_add_entities(entities)
+
+    # 0.9.1: a subject whose first grade arrives after start-up (e.g. a new
+    # "zajęcia techniczne" grade) used to get the notification but no sensor
+    # until Home Assistant was restarted. New subjects are added on the fly.
+    @callback
+    def _add_new_subjects() -> None:
+        if c.data:
+            new = _new_subject_entities(c, entry, known)
+            if new:
+                async_add_entities(new)
+
+    entry.async_on_unload(c.async_add_listener(_add_new_subjects))
+
+
+def _new_subjects(data, known: set[str]) -> list[str]:
+    """Subjects not seen yet (case-insensitive); marks them as known."""
+    new = []
+    for subject in _all_subjects(data or {}):
+        key = subject.casefold()
+        if key not in known:
+            known.add(key)
+            new.append(subject)
+    return new
+
+
+def _new_subject_entities(c, entry, known: set[str]) -> list:
+    return [SubjectGradesEntity(c, entry, s) for s in _new_subjects(c.data, known)]
 
 
 class Base(CoordinatorEntity, SensorEntity):
